@@ -3,36 +3,76 @@ import {CachedVault} from './cached-vault.js';
 import {createEditor} from './vendor/editor.js';
 import {parseTags} from './tags.js';
 const $ = id => document.getElementById(id);
-let vault, vaultId, notes = [], folders = [], current, filter = 'all', tag = '', dirty = false, timer, chain = Promise.resolve();
+let vault, vaultId, notes = [], folders = [], current, filter = 'tree', tag = '', dirty = false, timer, chain = Promise.resolve();
+let expandedFolders = new Set();
+let savedVault = null;
 const clientId = crypto.randomUUID();
 const selectedTrash = new Set();
 let purgeSnapshot = [];
 let folderTrashSnapshot = null;
-let autoAccessAttempted = false;
 const rich = createEditor($('body'), () => capture(true));
-const draftKey = () => `quiet-draft:${vaultId}:${clientId}`;
 const message = text => { $('message').textContent = text; $('message').hidden = !text; };
+const saveTime = value => new Intl.DateTimeFormat('ru', {hour:'2-digit', minute:'2-digit'}).format(value || Date.now());
+function editorSaveStatus(state, value) {
+  const saving = state === 'saving', trashed = state === 'trash', failed = state === 'error';
+  $('editorSaveStatus').dataset.state = state;
+  $('editorSaveIcon').textContent = saving ? '◌' : (trashed ? '↶' : (failed ? '!' : '✓'));
+  $('editorSaveText').textContent = saving ? 'Сохранение…' : (trashed ? 'Заметка в корзине' : (failed ? 'Не удалось сохранить' : `Сохранено ${saveTime(value)}`));
+  document.querySelector('.autosave-hint').hidden = saving || trashed || failed;
+}
 function status(text, state = '') {
   const label = text.replace(/^✓\s*/, '');
   $('status').hidden = state !== 'error'; $('status').dataset.state = state; $('status').title = label;
   $('statusText').textContent = label;
   $('statusMark').hidden = !state; $('statusMark').textContent = state === 'error' ? '!' : '…';
 }
-function report(error) { console.error(error); message(error.message || String(error)); status('Не сохранено на диск', 'error'); }
+function report(error) { console.error(error); message(error.message || String(error)); if (current) editorSaveStatus('error'); status('Не сохранено на диск', 'error'); }
 function run(fn) { return (...args) => { chain = chain.then(() => fn(...args)).catch(report); return chain; }; }
 const locked = fn => navigator.locks.request('quiet-notes-files', fn);
 function option(value, text) { const el = document.createElement('option'); el.value = value; el.textContent = text; return el; }
-function draftKeys() { return Object.keys(localStorage).filter(k => k.startsWith(`quiet-draft:${vaultId}:`)); }
-function recoveryState() { $('recover').hidden = !vault || !draftKeys().length; }
+function renderCustomSelect(id) {
+  const select = $(id), button = $(`${id}Button`), menu = $(`${id}Menu`);
+  const selected = select.selectedOptions[0];
+  button.textContent = selected?.textContent || '';
+  button.disabled = select.disabled;
+  menu.replaceChildren(...[...select.options].map(item => {
+    const choice = document.createElement('button'); choice.type = 'button'; choice.setAttribute('role', 'option');
+    choice.textContent = item.textContent; choice.classList.toggle('selected', item.value === select.value);
+    choice.onclick = () => { select.value = item.value; menu.hidden = true; button.setAttribute('aria-expanded', 'false'); select.dispatchEvent(new Event('change')); };
+    return choice;
+  }));
+}
+function toggleCustomSelect(id) {
+  const menu = $(`${id}Menu`), button = $(`${id}Button`), opening = menu.hidden;
+  for (const other of ['folderFilter', 'noteFolder']) if (other !== id) { $(`${other}Menu`).hidden = true; $(`${other}Button`).setAttribute('aria-expanded', 'false'); }
+  menu.hidden = !opening; button.setAttribute('aria-expanded', String(opening));
+}
+function requireFolder(text) {
+  notes = []; folders = ['']; current = null; dirty = false;
+  $('workspace').hidden = true; $('welcome').hidden = true;
+  $('folderRequiredText').textContent = text;
+  if (!$('folderRequired').open) $('folderRequired').showModal();
+}
+function folderUnavailable(error) {
+  if (!error) return false;
+  if (['NotFoundError', 'NotAllowedError', 'InvalidStateError', 'SecurityError'].includes(error.name)) return true;
+  return /folder|directory|папк|каталог|not found|access denied/i.test(error.message || '');
+}
+async function askForReplacementFolder() {
+  await setting('vault', null);
+  if (vault) {
+    vault.root = null; vault.disk = null; vault.connected = false; vault.error = null;
+    await scan();
+  }
+}
 function capture(bodyChanged = false) {
   if (!current || filter === 'trash') return;
   current.title = $('title').value;
   if (bodyChanged) current.body = rich.getMarkdown();
   dirty = true;
+  editorSaveStatus('saving');
   status('Сохранение…', 'pending');
-  try { localStorage.setItem(draftKey(), JSON.stringify(current)); }
-  catch { message('Не удалось сохранить аварийный черновик в браузере. Не закрывайте панель до сохранения на диск.'); }
-  clearTimeout(timer); timer = setTimeout(run(save), 350);
+  clearTimeout(timer); timer = setTimeout(run(save), 800);
   counts();
 }
 async function save() {
@@ -44,9 +84,9 @@ async function save() {
   const found = notes.find(n => n.path === target.path);
   if (found) Object.assign(found, target, {raw:text, modified:Date.now()});
   if (encode(current) === text) {
-    dirty = false; localStorage.removeItem(draftKey()); syncStatus();
+    dirty = false; editorSaveStatus('saved'); syncStatus();
   } else { status('Сохранение…', 'pending'); clearTimeout(timer); timer = setTimeout(run(save), 0); }
-  renderList(); recoveryState();
+  renderList();
   if (dirty) await save();
 }
 function counts() {
@@ -55,21 +95,27 @@ function counts() {
   $('filename').textContent = current?.path || '';
 }
 function snippet(markdown) {
-  return markdown.replace(/!\[([^\]]*)\]\([^)]*\)/g,'$1').replace(/\[([^\]]+)\]\([^)]*\)/g,'$1')
+  return markdown.replace(/<img\b[^>]*>/gi,'').replace(/<[^>]+>/g,' ').replace(/!\[([^\]]*)\]\([^)]*\)/g,'$1').replace(/\[([^\]]+)\]\([^)]*\)/g,'$1')
     .replace(/^\s*(?:#{1,6}\s|>\s?|[-*+]\s(?:\[[ xX]\]\s)?|\d+\.\s)/gm,'')
     .replace(/[*_`~]/g,'').replace(/\s+/g,' ').trim().slice(0,90);
 }
 function syncStatus() {
   if (!vault) return;
-  $('syncNotice').hidden = vault.connected && !vault.error;
-  $('syncText').textContent = vault.error ? vault.error.message : 'Заметки доступны. Подключите папку для записи изменений в файлы.';
-  $('syncAccess').textContent = vault.error ? 'Повторить запись' : 'Подключить папку';
+  const connected = vault.archiveState === 'connected' && !vault.pending;
+  const missing = vault.archiveState === 'missing';
+  const failed = missing || vault.archiveState === 'error';
+  $('syncNotice').hidden = false;
+  $('syncNotice').classList.toggle('connected', connected);
+  $('syncNotice').classList.toggle('failed', failed);
+  $('syncText').textContent = vault.error?.message || (connected ? 'Все изменения записаны в архив' : 'Нажмите, чтобы подключить архив');
+  $('syncAccess').textContent = connected ? '● Архив подключён' : missing ? '● Папка не найдена' : failed ? '● Ошибка архива' : '● Подключить архив';
   $('syncAccess').title = $('syncText').textContent;
-  if (vault.pending) status('✓ В браузере · ожидает записи в папку', 'pending');
-  else if (!vault.connected) status('Локальная копия · папка отключена', 'pending');
+  if (vault.pending) status('✓ В Chrome · архив ожидает записи', 'pending');
+  else if (!vault.root) status('✓ Сохранено в Chrome', '');
+  else if (!vault.connected) status('✓ В Chrome · архив отключён', 'pending');
   else status('✓ Сохранено', '');
   $('trashSync').hidden = !vault.pending && !vault.error;
-  $('trashSync').textContent = vault.error?.message || 'Изменения сохранены в браузере. Они применятся к файлам после подключения папки.';
+  $('trashSync').textContent = vault.error?.message || 'Изменения сохранены в Chrome и будут добавлены в резервный архив при подключении папки.';
 }
 function renderNoteTags() {
   $('noteTags').replaceChildren();
@@ -80,6 +126,20 @@ function renderNoteTags() {
     $('noteTags').append(chip);
   }
 }
+function availableTags() {
+  return [...new Set(notes.filter(n => !n.path.startsWith('.trash/')).flatMap(n => n.tags))]
+    .filter(value => !current?.tags.includes(value)).sort((a,b) => a.localeCompare(b, 'ru'));
+}
+function renderTagSuggestions(show = true) {
+  const menu = $('tagSuggestions'), query = $('tags').value.trim().toLocaleLowerCase('ru');
+  const values = availableTags().filter(value => value.toLocaleLowerCase('ru').includes(query));
+  menu.replaceChildren(...values.map(value => {
+    const button = document.createElement('button'); button.type = 'button'; button.role = 'option'; button.textContent = value;
+    button.onclick = () => { current.tags.push(value); $('tags').value = ''; renderNoteTags(); capture(); renderTagSuggestions(false); };
+    return button;
+  }));
+  menu.hidden = !show || !values.length; $('tags').setAttribute('aria-expanded', String(!menu.hidden));
+}
 function commitTags() {
   if (!current || filter === 'trash') return;
   const values = parseTags($('tags').value);
@@ -88,22 +148,71 @@ function commitTags() {
 }
 function renderList() {
   const inTrash = filter === 'trash';
-  $('workspace').classList.toggle('trash-mode', inTrash);
-  $('trashView').hidden = !inTrash;
-  $('all').classList.toggle('active', !inTrash); $('trash').classList.toggle('active', inTrash);
-  if (inTrash) { $('editor').hidden = true; renderTrash(); return; }
-  const list = $('list'); list.replaceChildren();
-  const visible = notes.filter(n => (n.path.startsWith('.trash/') === (filter === 'trash')) &&
-    (!$('folderFilter').value || n.path.substring(0,n.path.lastIndexOf('/')) === $('folderFilter').value) &&
-    (!tag || n.tags.includes(tag)) && matches(n, $('search').value)).sort((a,b) => b.modified - a.modified);
+  const inTree = filter === 'tree';
+  $('emptyTrash').hidden = !inTrash;
+  $('emptyTrash').disabled = !notes.some(note => note.path.startsWith('.trash/'));
+  $('workspace').classList.toggle('tree-mode', inTree);
+  $('workspace').classList.remove('trash-mode');
+  $('trashView').hidden = true;
+  for (const value of ['tree','all','trash']) { $(value).classList.toggle('active', filter === value); $(value).setAttribute('aria-selected', String(filter === value)); }
+  const list = $('list'); list.classList.remove('tree-list'); list.replaceChildren();
+  if (inTree) { renderTree(list); return; }
+  const folderFilter = $('folderFilter').value;
+  const visible = notes.filter(n => (n.path.startsWith('.trash/') === inTrash) &&
+    (inTrash || !folderFilter || n.path.substring(0,n.path.lastIndexOf('/')) === folderFilter) &&
+    (inTrash || !tag || n.tags.includes(tag)) && matches(n, $('search').value)).sort((a,b) => b.modified - a.modified);
   for (const note of visible) {
     const button = document.createElement('button'); button.className = 'card' + (current?.path === note.path ? ' selected' : '');
     const title = document.createElement('strong'); title.textContent = note.title || 'Без названия';
-    const description = document.createElement('small'); description.textContent = [note.tags.map(t => '#'+t).join(' '), snippet(note.body) || 'Пустая заметка'].filter(Boolean).join(' · ');
-    button.append(title, description); button.onclick = run(async () => { await save(); select(note); }); list.append(button);
+    const preview = document.createElement('span'); preview.className = 'card-preview'; preview.textContent = snippet(note.body) || 'Пустая заметка';
+    const tags = document.createElement('span'); tags.className = 'card-tags'; tags.textContent = note.tags.map(t => '#'+t).join(' ');
+    button.append(title, preview); if (note.tags.length) button.append(tags);
+    button.onclick = run(async () => { await save(); select(note); }); list.append(button);
   }
-  if (!visible.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = notes.length ? 'Здесь пока нет подходящих заметок' : 'Первая мысль начинается с «＋»'; list.append(p); }
-  $('all').classList.toggle('active', filter === 'all'); $('trash').classList.toggle('active', filter === 'trash');
+  if (!visible.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = inTrash ? 'Корзина пуста' : (notes.some(n => !n.path.startsWith('.trash/')) ? 'Здесь пока нет подходящих заметок' : 'Нет заметок'); list.append(p); }
+}
+function saveExpandedFolders() { localStorage.setItem(`quiet-tree:${vaultId}`, JSON.stringify([...expandedFolders])); }
+function renderTree(list) {
+  const query = $('search').value.trim();
+  const active = notes.filter(note => !note.path.startsWith('.trash/'));
+  const isMatch = note => !query || matches(note, query);
+  const folderSet = new Set(folders.filter(Boolean));
+  for (const note of active) {
+    const parts = note.path.split('/'); parts.pop();
+    for (let i = 1; i <= parts.length; i++) folderSet.add(parts.slice(0,i).join('/'));
+  }
+  const hasMatch = path => active.some(note => (path ? note.path.startsWith(path + '/') : !note.path.includes('/')) && isMatch(note));
+  const makeBranch = (path, depth) => {
+    const branch = document.createElement('div'); branch.className = 'tree-branch';
+    const parent = folder => folder.includes('/') ? folder.slice(0,folder.lastIndexOf('/')) : '';
+    const directFolders = [...folderSet].filter(folder => parent(folder) === path)
+      .filter(folder => !query || hasMatch(folder)).sort((a,b) => a.localeCompare(b,'ru'));
+    const directNotes = active.filter(note => (note.path.includes('/') ? note.path.slice(0,note.path.lastIndexOf('/')) : '') === path && isMatch(note))
+      .sort((a,b) => (a.title || '').localeCompare(b.title || '', 'ru'));
+    for (const folder of directFolders) {
+      const open = query || expandedFolders.has(folder);
+      const row = document.createElement('button'); row.className = 'tree-folder'; row.style.paddingLeft = `${8 + depth * 16}px`;
+      row.setAttribute('aria-expanded', String(open));
+      const arrow = document.createElement('span'); arrow.className = 'tree-arrow'; arrow.textContent = open ? '▾' : '▸';
+      const label = document.createElement('span'); label.textContent = folder.split('/').pop(); row.append(arrow, label);
+      row.onclick = () => { if (expandedFolders.has(folder)) expandedFolders.delete(folder); else expandedFolders.add(folder); saveExpandedFolders(); renderList(); };
+      branch.append(row); if (open) branch.append(makeBranch(folder, depth + 1));
+    }
+    if (!path && directFolders.length && directNotes.length) {
+      const divider = document.createElement('div'); divider.className = 'tree-root-divider'; divider.textContent = 'Заметки без папки'; branch.append(divider);
+    }
+    for (const note of directNotes) {
+      const row = document.createElement('button'); row.className = 'tree-note' + (current?.path === note.path ? ' selected' : '');
+      row.style.paddingLeft = `${28 + depth * 16}px`;
+      const bullet = document.createElement('span'); bullet.className = 'tree-bullet'; bullet.textContent = '•';
+      const label = document.createElement('span'); label.textContent = note.title || 'Без названия'; row.append(bullet, label);
+      row.title = snippet(note.body) || 'Пустая заметка';
+      row.onclick = run(async () => { await save(); select(note); }); branch.append(row);
+    }
+    return branch;
+  };
+  list.classList.add('tree-list'); list.append(makeBranch('', 0));
+  if (!list.textContent.trim()) { const empty = document.createElement('p'); empty.className = 'empty'; empty.textContent = query ? 'Ничего не найдено' : 'Нет заметок и папок'; list.append(empty); }
 }
 function visibleTrash() {
   return notes.filter(n => n.path.startsWith('.trash/') && matches(n,$('trashSearch').value)).sort((a,b) => b.modified-a.modified);
@@ -134,7 +243,7 @@ function renderTrash() {
     const content = document.createElement('span'); content.className = 'trash-row-content';
     const title = document.createElement('strong'); title.textContent = note.title || 'Без названия';
     const preview = document.createElement('span'); preview.className = 'trash-preview'; preview.textContent = snippet(note.body) || 'Пустая заметка';
-    const origin = document.createElement('small'); origin.textContent = note.originalPath || 'Корневая папка';
+    const origin = document.createElement('small'); origin.textContent = note.originalPath || 'Без папки';
     content.append(title,preview,origin); row.append(checkbox,content); $('trashList').append(row);
   }
   if (!visible.length) {
@@ -151,8 +260,9 @@ function renderFilters() {
   for (const folder of folders.filter(Boolean)) $('folderFilter').append(option(folder, folder));
   if (folders.includes(selected)) $('folderFilter').value = selected;
   $('deleteFolder').disabled = !$('folderFilter').value;
-  $('noteFolder').replaceChildren(...folders.map(f => option(f, f || 'Папка')));
+  $('noteFolder').replaceChildren(...folders.map(f => option(f, f || 'Без папки')));
   if (current) $('noteFolder').value = current.path.includes('/') ? current.path.slice(0,current.path.lastIndexOf('/')) : '';
+  renderCustomSelect('folderFilter'); renderCustomSelect('noteFolder');
   $('tagFilters').replaceChildren();
   const tags = [...new Set(notes.filter(n => !n.path.startsWith('.trash/')).flatMap(n => n.tags))].sort();
   for (const value of tags) {
@@ -167,9 +277,12 @@ function select(note) {
   $('noteFolder').value = note.path.includes('/') ? note.path.slice(0,note.path.lastIndexOf('/')) : '';
   const trashed = note.path.startsWith('.trash/');
   for (const id of ['title','tags','noteFolder']) $(id).disabled = trashed;
+  $('tagMenuButton').disabled = trashed;
+  renderCustomSelect('noteFolder');
   rich.setEditable(!trashed);
   document.querySelectorAll('.toolbar button').forEach(b => b.disabled = trashed);
-  $('delete').hidden = trashed; $('restore').hidden = !trashed;
+  $('noteMenuButton').hidden = trashed; $('noteMenu').hidden = true; $('restore').hidden = !trashed;
+  editorSaveStatus(trashed ? 'trash' : 'saved', note.modified);
   syncStatus(); if (trashed) status('В корзине · можно восстановить'); counts(); renderList();
 }
 async function scan() {
@@ -179,53 +292,110 @@ async function scan() {
     const found = notes.find(n => n.path === current.path);
     if (found) select(found); else { current = null; $('editor').hidden = true; }
   }
-  recoveryState(); syncStatus();
+  syncStatus();
 }
 async function activate(root, id) {
-  autoAccessAttempted = false;
   selectedTrash.clear(); $('trashSearch').value = '';
   vault = new CachedVault(root, id); vaultId = id; current = null; dirty = false;
   $('editor').hidden = true; $('welcome').hidden = true; $('workspace').hidden = false;
-  $('folderInfo').textContent = root.name;
+  $('folderInfo').textContent = root?.name || 'Резервная папка не выбрана.';
   message('');
+  await vault.bootstrapFromArchive();
   const cached = await vault.cached(); notes = cached.notes; folders = cached.folders; renderFilters(); renderList();
   const lastPath = localStorage.getItem(`quiet-selected:${id}`);
   const initial = notes.find(n => n.path === lastPath && !n.path.startsWith('.trash/')) || notes.find(n => !n.path.startsWith('.trash/'));
   if (initial) select(initial);
-  // Do not allow input while a disk refresh could replace the freshly shown cache.
-  $('workspace').inert = true;
-  try { await scan(); } finally { $('workspace').inert = false; }
+  await scan();
   if (!current && notes.length) { const note = notes.find(n => !n.path.startsWith('.trash/')); if (note) select(note); }
-  if (draftKeys().length) message('Есть несохранённый черновик. Его можно восстановить отдельной заметкой.');
 }
 // Call the picker directly in a click handler to preserve browser user activation.
+function confirmArchiveMerge(count) {
+  const dialog = $('mergeArchiveDialog');
+  $('mergeArchiveCount').textContent = `Найдено Markdown-заметок: ${count}.`;
+  return new Promise(resolve => {
+    dialog.returnValue = '';
+    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'merge'), {once:true});
+    $('confirmMergeArchive').onclick = () => dialog.close('merge');
+    $('otherArchive').onclick = () => { dialog.close('other'); choose(); };
+    dialog.showModal();
+  });
+}
 async function choose() {
-  if (dirty) { message('Сначала дождитесь сохранения текущей заметки или восстановите черновик.'); return; }
+  if (dirty) { message('Сначала дождитесь сохранения текущей заметки.'); return; }
   try {
     const root = await window.showDirectoryPicker({id:'quiet-notes', mode:'readwrite'});
-    const known = await setting('vaults') || [];
-    let id;
-    for (const item of known) if (await item.root.isSameEntry(root)) { id = item.id; break; }
-    if (!id) { id = crypto.randomUUID(); known.push({root,id}); await setting('vaults', known); }
-    await setting('vault', {root, id}); filter = 'all'; tag = ''; await activate(root, id); $('preferences').close();
+    const state = await root.queryPermission({mode:'readwrite'});
+    if (state !== 'granted' && await root.requestPermission({mode:'readwrite'}) !== 'granted') {
+      throw new Error('Доступ к записи в папку не предоставлен.');
+    }
+    const id = vaultId || savedVault?.id || 'local';
+    const sameFolder = savedVault?.root ? await savedVault.root.isSameEntry(root).catch(() => false) : false;
+    if (!sameFolder) {
+      const replacement = new CachedVault(root, id);
+      const imported = await replacement.disk.scan();
+      if (imported.notes.length && !await confirmArchiveMerge(imported.notes.length)) return;
+      await locked(() => replacement.mergeArchive(imported));
+    }
+    savedVault = {root, id};
+    await setting('vault', {root, id});
+    filter = 'tree'; tag = ''; await activate(root, id); $('preferences').close();
+    if ($('folderRequired').open) $('folderRequired').close();
+    if (!vault.connected) message(vault.error?.message || 'Папка выбрана, но Chrome пока не дал доступ к записи в архив.');
   } catch (error) { if (error.name !== 'AbortError') report(error); }
 }
 $('choose').onclick = choose; $('changeFolder').onclick = choose;
+$('chooseRequired').onclick = choose;
 $('settings').onclick = () => $('preferences').showModal();
+const themeToggle = document.createElement('button');
+themeToggle.id = 'themeToggle'; themeToggle.type = 'button';
+$('settings').after(themeToggle);
+function renderTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const dark = theme === 'dark';
+  themeToggle.textContent = dark ? '☀' : '☾';
+  themeToggle.title = dark ? 'Включить светлую тему' : 'Включить тёмную тему';
+  themeToggle.setAttribute('aria-label', themeToggle.title);
+  themeToggle.setAttribute('aria-pressed', String(dark));
+}
+let storedTheme;
+try { storedTheme = localStorage.getItem('quiet-theme'); } catch {}
+renderTheme(storedTheme === 'dark' || storedTheme === 'light' ? storedTheme :
+  (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+themeToggle.onclick = () => {
+  const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  renderTheme(theme);
+  try { localStorage.setItem('quiet-theme', theme); } catch {}
+};
+window.addEventListener('storage', event => {
+  if (event.key === 'quiet-theme' && ['light','dark'].includes(event.newValue)) renderTheme(event.newValue);
+});
 $('placement').onclick = () => chrome.tabs.create({url:'chrome://settings/appearance'});
 $('openTab').onclick = () => chrome.tabs.create({url:chrome.runtime.getURL('index.html')});
+function renderMenuSide(side) {
+  document.body.dataset.menuSide = side;
+  $('menuLeft').classList.toggle('active', side === 'left');
+  $('menuRight').classList.toggle('active', side === 'right');
+}
+async function setMenuSide(side) { renderMenuSide(side); await setting('menu-side', side); }
+$('menuLeft').onclick = () => setMenuSide('left').catch(report);
+$('menuRight').onclick = () => setMenuSide('right').catch(report);
 $('search').oninput = renderList;
-$('folderFilter').onchange = () => { $('deleteFolder').disabled = !$('folderFilter').value; renderList(); };
+$('folderFilter').onchange = () => { $('deleteFolder').disabled = !$('folderFilter').value; renderCustomSelect('folderFilter'); renderList(); };
+$('folderFilterButton').onclick = () => toggleCustomSelect('folderFilter');
+$('noteFolderButton').onclick = () => toggleCustomSelect('noteFolder');
 $('refresh').onclick = run(async () => {
-  // On conflict preserve the draft, then explicitly reload the external file.
+  // Flush the backup queue without changing the local note collection.
   try { await save(); } catch (error) { message(error.message); dirty = false; }
   await scan();
 });
-for (const value of ['all','trash']) $(value).onclick = run(async () => {
-  await save(); filter = value; tag = ''; selectedTrash.clear(); message(''); $('folderFilter').value = ''; current = null; $('editor').hidden = true; renderFilters(); renderList();
+for (const value of ['tree','all','trash']) $(value).onclick = run(async () => {
+  await save(); filter = value; tag = ''; selectedTrash.clear(); message(''); $('folderFilter').value = ''; renderFilters(); renderList();
   if (value === 'all') {
     const last = localStorage.getItem(`quiet-selected:${vaultId}`);
     const note = notes.find(n => n.path === last && !n.path.startsWith('.trash/')) || notes.find(n => !n.path.startsWith('.trash/'));
+    if (note) select(note); else { current = null; $('editor').hidden = true; }
+  } else if (value === 'trash') {
+    const note = notes.filter(n => n.path.startsWith('.trash/')).sort((a,b) => b.modified-a.modified)[0];
     if (note) select(note);
   }
 });
@@ -251,6 +421,15 @@ $('purgeSelected').onclick = () => {
   if (!purgeSnapshot.length) return;
   $('purgeDescription').textContent = `Будет удалено заметок: ${purgeSnapshot.length}.`;
   $('purgeNames').replaceChildren(...purgeSnapshot.map(n => { const item = document.createElement('li'); item.textContent = n.title || 'Без названия'; return item; }));
+  $('purgeDialog').showModal();
+};
+$('emptyTrash').onclick = () => {
+  purgeSnapshot = notes.filter(note => note.path.startsWith('.trash/')).map(note => ({...note}));
+  if (!purgeSnapshot.length) return;
+  $('purgeDescription').textContent = `Будут безвозвратно удалены все заметки из корзины: ${purgeSnapshot.length}, включая скрытые поиском.`;
+  $('purgeNames').replaceChildren(...purgeSnapshot.map(note => {
+    const item = document.createElement('li'); item.textContent = note.title || 'Без названия'; return item;
+  }));
   $('purgeDialog').showModal();
 };
 $('cancelPurge').onclick = () => { purgeSnapshot = []; $('purgeDialog').close(); };
@@ -294,13 +473,47 @@ $('confirmFolderTrash').onclick = run(async () => {
   } finally { $('workspace').inert = false; }
 });
 $('title').addEventListener('input', () => capture());
+$('noteMenuButton').onclick = event => {
+  event.stopPropagation(); const open = $('noteMenu').hidden;
+  $('noteMenu').hidden = !open; $('noteMenuButton').setAttribute('aria-expanded', String(open));
+};
+$('tagMenuButton').onclick = event => { event.stopPropagation(); renderTagSuggestions($('tagSuggestions').hidden); };
+$('tags').addEventListener('focus', () => renderTagSuggestions());
 $('tags').addEventListener('keydown', event => {
   if (!event.isComposing && ['Enter',' ',','].includes(event.key)) { event.preventDefault(); commitTags(); }
 });
 $('tags').addEventListener('input', event => {
   if (!event.isComposing && /[\s,]/u.test($('tags').value)) commitTags();
+  renderTagSuggestions();
 });
-$('tags').addEventListener('blur', () => { commitTags(); run(async () => { await save(); renderFilters(); })(); });
+$('tags').addEventListener('blur', () => { setTimeout(() => renderTagSuggestions(false), 120); commitTags(); run(async () => { await save(); renderFilters(); })(); });
+$('insertImage').onclick = () => {
+  if (current && filter !== 'trash') $('imageInput').click();
+};
+function insertImageFile(file) {
+  if (!file) return;
+  if (!/^image\/(png|jpeg|gif|webp)$/i.test(file.type)) { message('Поддерживаются PNG, JPEG, GIF и WebP.'); return; }
+  if (file.size > 8 * 1024 * 1024) { message('Изображение должно быть не больше 8 МБ.'); return; }
+  const reader = new FileReader();
+  reader.onerror = () => message('Не удалось прочитать изображение.');
+  reader.onload = () => {
+    if (typeof reader.result !== 'string' || !rich.insertImage(reader.result)) { message('Не удалось вставить изображение.'); return; }
+    capture(true);
+  };
+  reader.readAsDataURL(file);
+}
+$('imageInput').onchange = () => {
+  const [file] = $('imageInput').files;
+  $('imageInput').value = '';
+  insertImageFile(file);
+};
+document.addEventListener('paste', event => {
+  if (!current || filter === 'trash' || !event.target.closest('#body')) return;
+  const image = [...(event.clipboardData?.files || [])].find(file => /^image\//i.test(file.type));
+  if (!image) return;
+  event.preventDefault();
+  insertImageFile(image);
+});
 $('noteFolder').onchange = run(async () => {
   const folder = $('noteFolder').value; await save();
   const destination = (folder ? folder+'/' : '') + current.path.split('/').pop();
@@ -308,6 +521,7 @@ $('noteFolder').onchange = run(async () => {
   await locked(() => vault.move(current, destination)); current = null; await scan(); select(notes.find(n => n.path === destination));
 });
 $('delete').onclick = run(async () => {
+  $('noteMenu').hidden = true; $('noteMenuButton').setAttribute('aria-expanded', 'false');
   await save(); const destination = `.trash/${crypto.randomUUID()}.md`;
   await locked(() => vault.move(current, destination, {originalPath:current.path}));
   current = null; $('editor').hidden = true; await scan(); message('Заметка в корзине. Её можно восстановить.');
@@ -318,54 +532,45 @@ $('restore').onclick = run(async () => {
   await locked(() => vault.move(current, destination, {originalPath:null})); current = null; filter = 'all';
   await scan(); select(notes.find(n => n.path === destination)); message('Заметка восстановлена.');
 });
-$('recover').onclick = run(async () => {
-  clearTimeout(timer);
-  const keys = draftKeys(); if (!keys.length) return;
-  // Preserve every draft under a new unique name; never overwrite the external file.
-  for (const key of keys) {
-    const draft = JSON.parse(localStorage.getItem(key));
-    const path = `Черновик-${crypto.randomUUID()}.md`;
-    await locked(() => vault.write(path, encode(draft))); localStorage.removeItem(key);
-  }
-  dirty = false; await scan(); message('Черновики сохранены отдельными заметками в корневой папке.');
-});
 document.addEventListener('keydown', event => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); run(save)(); }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); $(filter === 'trash' ? 'trashSearch' : 'search').focus(); }
+  if (event.key === 'Escape') { $('noteMenu').hidden = true; $('noteMenuButton').setAttribute('aria-expanded', 'false'); renderTagSuggestions(false); }
+});
+document.addEventListener('click', event => {
+  if (!event.target.closest('.note-menu-wrap')) { $('noteMenu').hidden = true; $('noteMenuButton').setAttribute('aria-expanded', 'false'); }
+  if (!event.target.closest('.tag-picker')) renderTagSuggestions(false);
+  if (!event.target.closest('.custom-select')) for (const id of ['folderFilter', 'noteFolder']) { $(`${id}Menu`).hidden = true; $(`${id}Button`).setAttribute('aria-expanded', 'false'); }
 });
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
 document.addEventListener('visibilitychange', () => { if (document.hidden && dirty) run(save)(); });
+// Background archive checks must never reselect the note and erase a draft.
+setInterval(() => {
+  if (vault) run(async () => { await locked(() => vault.flush()); syncStatus(); })();
+}, 15 * 60 * 1000);
 async function init() {
+  renderMenuSide(await setting('menu-side') || 'left');
   const stored = await setting('vault');
-  if (!stored) return;
-  await activate(stored.root, stored.id);
+  savedVault = stored || null;
+  try { expandedFolders = new Set(JSON.parse(localStorage.getItem(`quiet-tree:${stored?.id || 'local'}`) || '[]')); } catch { expandedFolders = new Set(); }
+  await activate(stored?.root || null, stored?.id || 'local');
 }
 $('syncAccess').onclick = async () => {
   try {
-    // Browser-controlled persistent permission: request directly from the click.
-    if (await vault.root.requestPermission({mode:'readwrite'}) !== 'granted') return;
-    await run(async () => { await save(); await scan(); })();
-  } catch (error) { report(error); }
-};
-// Request from an intentional note interaction while browser activation is live.
-// One automatic attempt per opening; a refusal leaves the explicit button available.
-document.addEventListener('click', async event => {
-  if (!event.isTrusted || !vault || vault.connected || autoAccessAttempted ||
-      !event.target.closest('#editor, #new')) return;
-  autoAccessAttempted = true;
-  const targetVault = vault;
-  try {
-    const permission = await targetVault.root.requestPermission({mode:'readwrite'});
-    if (permission !== 'granted' || vault !== targetVault) return;
-    await run(async () => {
-      if (vault !== targetVault) return;
-      await save();
-      await locked(() => targetVault.flush());
-      syncStatus();
-    })();
+    if (!savedVault?.root || vault?.archiveState === 'missing') { await choose(); return; }
+    if (savedVault?.root && (!vault?.connected || vault.error)) {
+      const root = savedVault.root;
+      // Invoke before ANY await so the browser sees the actual button gesture.
+      const permission = root.requestPermission({mode:'readwrite'});
+      const granted = await permission === 'granted';
+      if (!granted) throw new Error('Доступ к папке не предоставлен. Выберите папку архива заново.');
+    }
+    await run(async () => { await save(); await locked(() => vault.flush()); syncStatus(); })();
+    if (vault.error) message(vault.archiveState === 'missing'
+      ? 'Папка архива не найдена. Нажмите на красный индикатор, чтобы выбрать другую. Заметки сохранены в Chrome.'
+      : vault.error.message);
   } catch (error) {
-    // A browser may reject automatic restoration; local saving remains available.
-    console.warn('Folder access could not be restored', error);
+    message(error.message || String(error));
   }
-}, {capture:true});
+};
 init().catch(report);

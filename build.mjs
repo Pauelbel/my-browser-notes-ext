@@ -1,7 +1,11 @@
 import {build} from 'esbuild';
 import {readdir, readFile, writeFile} from 'node:fs/promises';
 import path from 'node:path';
-await build({entryPoints:['editor-source.js'],bundle:true,format:'esm',outfile:'vendor/editor.js',minify:true,legalComments:'linked',target:'chrome122'});
+import {createRequire} from 'node:module';
+const require = createRequire(import.meta.url);
+const tableRequire = createRequire(require.resolve('@tiptap/extension-table'));
+await build({entryPoints:['editor-source.js'],bundle:true,format:'esm',outfile:'vendor/editor.js',minify:true,legalComments:'linked',target:'chrome122',
+  alias:{'@tiptap/pm/tables':tableRequire.resolve('@tiptap/pm/tables')}});
 const notices = [];
 for (const entry of await readdir('node_modules/.pnpm')) {
   const base = path.join('node_modules/.pnpm',entry,'node_modules');

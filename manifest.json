@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Тихие заметки",
-  "version": "0.3.1",
+  "name": "Заметки",
+  "version": "0.4.0",
   "minimum_chrome_version": "122",
   "description": "Личные Markdown-заметки в вашей папке: теги, поиск и корзина.",
   "permissions": ["sidePanel"],

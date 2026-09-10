@@ -1,151 +1,177 @@
 import {Vault, encode, decode, parts, setting} from './storage.js';
 
-// The durable outbox is committed before touching disk. Each step is replay-safe
-// if the panel closes between a disk write and the IndexedDB acknowledgement.
+// Notes live in IndexedDB. A selected folder is an optional, asynchronous
+// Markdown archive: a missing or disconnected folder never blocks the editor.
 export class CachedVault {
-  constructor(root, id, persist = setting) {
-    this.root = root; this.disk = new Vault(root); this.key = `collection:${id}`;
-    this.persist = persist; this.pending = 0; this.error = null; this.connected = false; this.warning = null;
+  constructor(root, id = 'local', persist = setting) {
+    this.root = root || null;
+    this.disk = this.root ? new Vault(this.root) : null;
+    this.key = `collection:${id}`;
+    this.persist = persist;
+    this.pending = 0; this.error = null; this.connected = false; this.warning = null;
+    this.archiveState = root ? 'permission' : 'unconfigured';
   }
   async state() { return await this.persist(this.key) || {notes:[], folders:[''], outbox:[]}; }
   async cached() { const state = await this.state(); this.pending = state.outbox.length; return state; }
-  async permission() { return await this.root.queryPermission({mode:'readwrite'}) === 'granted'; }
+  async bootstrapFromArchive() {
+    const state = await this.state();
+    if (state.initialized || state.notes.length || state.folders.length > 1 || !await this.permission()) return false;
+    try {
+      const imported = await this.disk.scan();
+      await this.persist(this.key, {...imported, outbox:[], initialized:true});
+      return true;
+    } catch (error) { this.error = error; return false; }
+  }
+  async permission() {
+    if (!this.root) return false;
+    try { return await this.root.queryPermission({mode:'readwrite'}) === 'granted'; }
+    catch (error) { this.error = error; return false; }
+  }
   async flush() {
     this.error = null; this.warning = null;
     const state = await this.state(); this.pending = state.outbox.length;
     this.connected = await this.permission();
-    if (!this.connected) return;
+    if (!this.connected) {
+      this.archiveState = this.root ? 'permission' : 'unconfigured';
+      return;
+    }
+    // Check the root itself before interpreting a missing note as a new file.
+    try {
+      for await (const entry of this.root.entries()) { break; }
+    } catch (error) {
+      this.connected = false; this.error = error;
+      this.archiveState = error.name === 'NotFoundError' ? 'missing' : 'error';
+      return;
+    }
+    this.archiveState = 'syncing';
     try {
       while (state.outbox.length) {
         const op = state.outbox[0];
         if (op.type === 'mkdir') await this.disk.directory(op.path, true);
         else if (op.type === 'rmdir') {
-          // Never recursively delete a directory: files created externally or
-          // non-note files must survive. Missing directories are replay-safe.
           try {
             const segments = parts(op.path), name = segments.pop();
             await (await this.disk.directory(segments.join('/'))).removeEntry(name);
           } catch (error) {
-            if (error.name === 'InvalidModificationError') this.warning = 'Заметки перемещены в корзину. Папки с другими файлами сохранены на диске.';
+            if (error.name === 'InvalidModificationError') this.warning = 'Заметки сохранены в архиве, но папки с другими файлами оставлены на диске.';
             else if (error.name !== 'NotFoundError') throw error;
           }
-        }
-        else {
+        } else {
           let actual;
           try { actual = await this.disk.read(op.path); } catch (error) { if (error.name !== 'NotFoundError') throw error; }
           if (op.type === 'write') {
             if (actual !== op.text) {
-              if (actual !== op.expected) throw Error(`Файл «${op.path}» изменён вне приложения. Локальная версия сохранена; синхронизация остановлена, чтобы не затереть изменения.`);
+              if (actual !== op.expected) throw Error(`Файл «${op.path}» изменён вне заметок. Архив не перезаписан.`);
               await this.disk.write(op.path, op.text, actual);
             }
           } else if (actual !== undefined) {
-            if (actual !== op.expected) throw Error(`Файл «${op.path}» изменился. Удаление с диска остановлено, чтобы сохранить внешние изменения.`);
-            if (op.copyPath && await this.disk.read(op.copyPath) !== op.copyText) throw Error('Копия изменилась до завершения переноса. Исходный файл сохранён.');
+            if (actual !== op.expected) throw Error(`Файл «${op.path}» изменён вне заметок. Удаление из архива остановлено.`);
             const segments = parts(op.path), name = segments.pop();
             await (await this.disk.directory(segments.join('/'))).removeEntry(name);
           }
         }
         state.outbox.shift(); await this.persist(this.key, state); this.pending = state.outbox.length;
       }
-    } catch (error) { this.error = error; }
+      this.archiveState = 'connected';
+    } catch (error) { this.error = error; this.archiveState = 'error'; }
   }
   async scan() {
     await this.flush();
-    if (this.connected && !this.pending) {
-      try {
-        const result = await this.disk.scan();
-        await this.persist(this.key, {...result, outbox:[]}); return result;
-      } catch (error) { this.error = error; }
-    }
     return this.cached();
+  }
+  async seedArchive() {
+    // A replacement folder needs all notes, including those already archived
+    // elsewhere. Do not replay deletions belonging to the previous folder.
+    const state = await this.state();
+    state.outbox = state.folders.filter(Boolean).map(path => ({type:'mkdir',path}))
+      .concat(state.notes.map(note => ({type:'write',path:note.path,text:note.raw})));
+    await this.persist(this.key, state);
+  }
+  async mergeArchive(imported) {
+    const state = await this.state();
+    const occupied = new Set([...state.notes, ...imported.notes].map(note => note.path.toLocaleLowerCase('ru')));
+    const merged = [...imported.notes];
+    const identity = note => JSON.stringify([note.title, note.body, [...note.tags].sort(), note.originalPath || null]);
+    let conflicts = 0;
+    for (const local of state.notes) {
+      const archived = imported.notes.find(note => note.path.toLocaleLowerCase('ru') === local.path.toLocaleLowerCase('ru'));
+      if (!archived) { merged.push(local); continue; }
+      if (identity(local) === identity(archived)) continue;
+      // Preserve existing archive bytes; put the local version in a new file.
+      const stem = local.path.replace(/\.md$/i, '');
+      let index = 1, path;
+      do { path = `${stem} (локальная версия${index === 1 ? '' : ' ' + index}).md`; index++; }
+      while (occupied.has(path.toLocaleLowerCase('ru')));
+      occupied.add(path.toLocaleLowerCase('ru'));
+      const raw = encode({...local, title: `${local.title} (локальная версия)`});
+      merged.push({...decode(raw, path), modified:local.modified}); conflicts++;
+    }
+    state.notes = merged;
+    state.folders = [...new Set([...state.folders, ...imported.folders])];
+    state.initialized = true;
+    state.outbox = state.folders.filter(Boolean).map(path => ({type:'mkdir', path}))
+      .concat(merged.filter(note => !imported.notes.some(item => item.path === note.path))
+        .map(note => ({type:'write', path:note.path, text:note.raw})));
+    await this.persist(this.key, state);
+    return {conflicts};
   }
   async write(path, text, expected) {
     parts(path);
-    const state = await this.state(), old = state.notes.find(n => n.path === path);
-    if (old?.raw !== expected) throw Error('Заметка изменилась в другом окне. Обновите список; ваш черновик сохранён.');
-    const note = {...decode(text,path), modified:Date.now()};
-    state.notes = state.notes.filter(n => n.path !== path).concat(note);
-    state.outbox.push({type:'write',path,text,expected});
-    await this.persist(this.key,state); await this.flush();
+    const state = await this.state(), old = state.notes.find(note => note.path === path);
+    if (old && old.raw !== expected) throw Error('Заметка изменилась в другом окне. Обновите список; черновик сохранён в браузере.');
+    state.initialized = true;
+    state.notes = state.notes.filter(note => note.path !== path).concat({...decode(text,path), modified:Date.now()});
+    state.outbox.push({type:'write', path, text, expected:old?.raw});
+    await this.persist(this.key, state); await this.flush();
   }
   async directory(path, create) {
-    if (!create) return this.disk.directory(path);
+    if (!create) return this.disk?.directory(path);
     parts(path); const state = await this.state();
-    if (!state.folders.includes(path)) {
-      state.folders.push(path); state.outbox.push({type:'mkdir',path}); await this.persist(this.key,state);
-    }
+    if (!state.folders.includes(path)) { state.folders.push(path); state.outbox.push({type:'mkdir',path}); await this.persist(this.key,state); }
     await this.flush();
   }
   async move(note, destination, changes = {}) {
     parts(destination); const state = await this.state();
-    if (state.notes.some(n => n.path === destination)) throw Error('Файл с таким именем уже существует.');
-    if (state.notes.find(n => n.path === note.path)?.raw !== note.raw) throw Error('Заметка изменилась в другом окне. Обновите список.');
+    if (state.notes.some(value => value.path === destination)) throw Error('Заметка с таким именем уже существует.');
+    if (state.notes.find(value => value.path === note.path)?.raw !== note.raw) throw Error('Заметка изменилась в другом окне. Обновите список.');
     const text = encode({...note,...changes});
-    state.notes = state.notes.filter(n => n.path !== note.path).concat({...decode(text,destination),modified:Date.now()});
-    state.outbox.push({type:'write',path:destination,text}, {type:'delete',path:note.path,expected:note.raw,copyPath:destination,copyText:text});
+    state.notes = state.notes.filter(value => value.path !== note.path).concat({...decode(text,destination),modified:Date.now()});
+    state.outbox.push({type:'write',path:destination,text,expected:undefined}, {type:'delete',path:note.path,expected:note.raw});
     await this.persist(this.key,state); await this.flush();
   }
   async trashFolder(path, expected) {
     parts(path);
-    if (path.split('/')[0].toLowerCase() === '.trash') throw Error('Нельзя удалить служебную корзину.');
     const state = await this.state(), inside = value => value === path || value.startsWith(path + '/');
-    if (!state.folders.includes(path)) throw Error('Папка больше не существует. Обновите список.');
-    const affectedNotes = state.notes.filter(n => n.path.startsWith(path + '/'));
+    const affectedNotes = state.notes.filter(note => note.path.startsWith(path + '/'));
     const affectedFolders = state.folders.filter(inside);
-    if (!expected || affectedNotes.length !== expected.notes.length || affectedFolders.length !== expected.folders.length ||
-      affectedNotes.some(n => !expected.notes.some(old => old.path === n.path && old.raw === n.raw)) ||
-      affectedFolders.some(folder => !expected.folders.includes(folder))) {
-      throw Error('Содержимое папки изменилось. Откройте подтверждение заново.');
-    }
+    if (!expected || affectedNotes.length !== expected.notes.length || affectedFolders.length !== expected.folders.length) throw Error('Содержимое папки изменилось. Откройте подтверждение заново.');
     const trashed = [];
     for (const note of affectedNotes) {
-      const destination = `.trash/${crypto.randomUUID()}.md`;
-      const text = encode({...note, originalPath:note.path});
+      const destination = `.trash/${crypto.randomUUID()}.md`, text = encode({...note,originalPath:note.path});
       trashed.push({...decode(text,destination),modified:Date.now()});
-      state.outbox.push({type:'write',path:destination,text}, {type:'delete',path:note.path,expected:note.raw,copyPath:destination,copyText:text});
+      state.outbox.push({type:'write',path:destination,text,expected:undefined},{type:'delete',path:note.path,expected:note.raw});
     }
-    state.notes = state.notes.filter(n => !n.path.startsWith(path + '/')).concat(trashed);
+    state.notes = state.notes.filter(note => !note.path.startsWith(path + '/')).concat(trashed);
     state.folders = state.folders.filter(folder => !inside(folder));
-    // Children before parents, after all note copies have been verified.
-    state.outbox.push(...affectedFolders.sort((a,b) => b.split('/').length-a.split('/').length).map(folder => ({type:'rmdir',path:folder})));
+    state.outbox.push(...affectedFolders.sort((a,b) => b.split('/').length-a.split('/').length).map(path => ({type:'rmdir',path})));
     await this.persist(this.key,state); await this.flush();
     return {count:affectedNotes.length, warning:this.warning};
   }
-  validateTrash(state, selected) {
-    const paths = new Set();
-    for (const note of selected) {
-      parts(note.path);
-      if (!note.path.startsWith('.trash/')) throw Error('Эта операция доступна только для заметок в корзине.');
-      if (paths.has(note.path)) throw Error('Заметка выбрана дважды.');
-      paths.add(note.path);
-      if (!state.notes.some(n => n.path === note.path && n.raw === note.raw)) throw Error('Корзина изменилась в другом окне. Обновите список и повторите выбор.');
-    }
-  }
-  async purgeTrash(selected) {
-    const state = await this.state(); this.validateTrash(state, selected);
-    const paths = new Set(selected.map(n => n.path));
-    state.notes = state.notes.filter(n => !paths.has(n.path));
-    state.outbox.push(...selected.map(n => ({type:'delete',path:n.path,expected:n.raw})));
-    await this.persist(this.key,state); await this.flush();
-  }
   async restoreTrash(selected) {
-    const state = await this.state(); this.validateTrash(state, selected);
-    const occupied = new Set(state.notes.map(n => n.path));
+    const state = await this.state();
     for (const note of selected) {
       let destination = note.originalPath || `Восстановленная-${crypto.randomUUID()}.md`;
-      parts(destination);
-      if (destination.startsWith('.trash/')) throw Error('Некорректный путь восстановления.');
-      if (occupied.has(destination)) destination = destination.replace(/\.md$/i,'') + `-восстановлено-${crypto.randomUUID()}.md`;
-      occupied.add(destination);
+      if (state.notes.some(value => value.path === destination)) destination = destination.replace(/\.md$/i,'') + `-восстановлено-${crypto.randomUUID()}.md`;
       const text = encode({...note,originalPath:null});
-      state.notes = state.notes.filter(n => n.path !== note.path).concat({...decode(text,destination),modified:Date.now()});
-      const segments = parts(destination); segments.pop();
-      for (let count = 1; count <= segments.length; count++) {
-        const folder = segments.slice(0,count).join('/');
-        if (!state.folders.includes(folder)) state.folders.push(folder);
-      }
-      state.outbox.push({type:'write',path:destination,text}, {type:'delete',path:note.path,expected:note.raw,copyPath:destination,copyText:text});
+      state.notes = state.notes.filter(value => value.path !== note.path).concat({...decode(text,destination),modified:Date.now()});
+      state.outbox.push({type:'write',path:destination,text,expected:undefined},{type:'delete',path:note.path,expected:note.raw});
     }
+    await this.persist(this.key,state); await this.flush();
+  }
+  async purgeTrash(selected) {
+    const state = await this.state(), paths = new Set(selected.map(note => note.path));
+    state.notes = state.notes.filter(note => !paths.has(note.path));
+    state.outbox.push(...selected.map(note => ({type:'delete',path:note.path,expected:note.raw})));
     await this.persist(this.key,state); await this.flush();
   }
 }
