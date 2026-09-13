@@ -23,9 +23,9 @@ class Directory {
   async *entries() { if (this.missing) throw new DOMException('Missing','NotFoundError'); yield* this.entriesMap.entries(); }
 }
 class File {
-  kind = 'file'; content = ''; fail = false;
-  async getFile() { const text = this.content; return {text: async () => text, lastModified:1}; }
-  async createWritable() { let pending; return {write: async text => { if (this.fail) throw Error('Disk full'); pending = text; }, close: async () => {this.content = pending;}, abort:async () => {}}; }
+  kind = 'file'; content = ''; fail = false; modified = 1;
+  async getFile() { const text = this.content; return {text: async () => text, lastModified:this.modified}; }
+  async createWritable() { let pending; return {write: async text => { if (this.fail) throw Error('Disk full'); pending = text; }, close: async () => {this.content = pending; this.modified = Date.now();}, abort:async () => {}}; }
 }
 function persistence() {
   const data = new Map();
@@ -176,7 +176,22 @@ test('scan imports new archive notes and folders once, preserving local edits', 
   assert.equal(state.notes.find(n => n.path === 'nested/manual.md').body,'# Written by hand');
   assert.ok(state.folders.includes('empty'));
   assert.equal((await vault.scan()).notes.length,2);
-  assert.equal(await disk.read('a.md'),'external');
+  assert.equal(await disk.read('a.md'),'local draft');
+});
+test('newer edits win between the browser collection and the archive', async () => {
+  const root = new Directory(), persist = persistence(), vault = new CachedVault(root,'latest-edit',persist), disk = new Vault(root);
+  await vault.write('a.md','initial'); await vault.scan();
+  await disk.write('a.md','edited outside','initial');
+  root.entriesMap.get('a.md').modified = Date.now() + 1_000;
+  let state = await vault.scan();
+  assert.equal(state.notes.find(note => note.path === 'a.md').body,'edited outside');
+  root.permission = 'prompt';
+  await vault.write('a.md','edited in browser','edited outside');
+  root.permission = 'granted';
+  root.entriesMap.get('a.md').modified = 1;
+  state = await vault.scan();
+  assert.equal(state.notes.find(note => note.path === 'a.md').body,'edited in browser');
+  assert.equal(await disk.read('a.md'),'edited in browser');
 });
 test('scan does not resurrect notes with queued deletions behind an archive conflict', async () => {
   const root = new Directory(), persist = persistence(), vault = new CachedVault(root,'queued-import',persist), disk = new Vault(root);

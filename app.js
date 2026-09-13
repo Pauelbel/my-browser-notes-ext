@@ -110,15 +110,15 @@ function syncStatus() {
   $('syncNotice').hidden = false;
   $('syncNotice').classList.toggle('connected', connected);
   $('syncNotice').classList.toggle('failed', failed);
-  $('syncText').textContent = vault.error?.message || (connected ? 'Все изменения записаны в архив' : 'Нажмите, чтобы подключить архив');
+  $('syncText').textContent = vault.error?.message || vault.syncNotice || (connected ? 'Все изменения записаны в архив' : 'Нажмите, чтобы подключить архив');
   $('syncAccess').textContent = connected ? '● Архив подключён' : missing ? '● Папка не найдена' : failed ? '● Ошибка архива' : '● Подключить архив';
   $('syncAccess').title = $('syncText').textContent;
   if (vault.pending) status('✓ В Chrome · архив ожидает записи', 'pending');
   else if (!vault.root) status('✓ Сохранено в Chrome', '');
   else if (!vault.connected) status('✓ В Chrome · архив отключён', 'pending');
   else status('✓ Сохранено', '');
-  $('trashSync').hidden = !vault.pending && !vault.error;
-  $('trashSync').textContent = vault.error?.message || 'Изменения сохранены в Chrome и будут добавлены в резервный архив при подключении папки.';
+  $('trashSync').hidden = !vault.pending && !vault.error && !vault.syncNotice;
+  $('trashSync').textContent = vault.error?.message || vault.syncNotice || 'Изменения сохранены в Chrome и будут добавлены в резервный архив при подключении папки.';
 }
 function renderNoteTags() {
   $('noteTags').replaceChildren();

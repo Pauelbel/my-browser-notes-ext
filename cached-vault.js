@@ -8,7 +8,7 @@ export class CachedVault {
     this.disk = this.root ? new Vault(this.root) : null;
     this.key = `collection:${id}`;
     this.persist = persist;
-    this.pending = 0; this.error = null; this.connected = false; this.warning = null;
+    this.pending = 0; this.error = null; this.connected = false; this.warning = null; this.syncNotice = null;
     this.archiveState = root ? 'permission' : 'unconfigured';
   }
   async state() { return await this.persist(this.key) || {notes:[], folders:[''], outbox:[]}; }
@@ -61,11 +61,10 @@ export class CachedVault {
           try { actual = await this.disk.read(op.path); } catch (error) { if (error.name !== 'NotFoundError') throw error; }
           if (op.type === 'write') {
             if (actual !== op.text) {
-              if (actual !== op.expected) throw Error(`Файл «${op.path}» изменён вне заметок. Архив не перезаписан.`);
+              if (actual !== op.expected) throw Error(`Файл «${op.path}» изменён вне заметок во время синхронизации. Повторите обновление.`);
               await this.disk.write(op.path, op.text, actual);
             }
           } else if (actual !== undefined) {
-            if (actual !== op.expected) throw Error(`Файл «${op.path}» изменён вне заметок. Удаление из архива остановлено.`);
             const segments = parts(op.path), name = segments.pop();
             await (await this.disk.directory(segments.join('/'))).removeEntry(name);
           }
@@ -110,10 +109,41 @@ export class CachedVault {
     if (folders.length !== state.folders.length) { state.folders = folders; changed = true; }
     if (changed) await this.persist(this.key, state);
   }
+  async reconcileChanged(archive, protectedPaths) {
+    const state = await this.state();
+    let changed = false, loaded = 0, saved = 0;
+    for (const remote of archive.notes) {
+      const local = state.notes.find(note => note.path === remote.path);
+      if (!local || local.raw === remote.raw || protectedPaths.includes(remote.path)) continue;
+      const operations = state.outbox.filter(op => op.path === remote.path);
+      const pendingWrite = operations.find(op => op.type === 'write');
+      const remoteIsNewer = remote.modified > (local.modified || 0) || (!pendingWrite && remote.modified >= (local.modified || 0));
+      if (remoteIsNewer) {
+        state.notes = state.notes.filter(note => note.path !== remote.path).concat(remote);
+        state.outbox = state.outbox.filter(op => op.path !== remote.path);
+        loaded++;
+      } else {
+        if (pendingWrite) pendingWrite.expected = remote.raw;
+        else state.outbox.push({type:'write', path:local.path, text:local.raw, expected:remote.raw});
+        saved++;
+      }
+      changed = true;
+    }
+    if (changed) {
+      this.syncNotice = loaded && saved ? 'Из архива загружены более новые заметки; более новые версии из браузера сохранены в архив.' :
+        loaded ? `Загружено более новых версий из архива: ${loaded}.` : `Сохранено более новых версий в архив: ${saved}.`;
+      await this.persist(this.key, state);
+    }
+  }
   async scan(protectedPaths = []) {
     // Only a complete, successful directory scan can establish external deletion.
+    this.syncNotice = null;
     if (await this.permission()) {
-      try { await this.reconcileDeleted(await this.disk.scan(), protectedPaths); }
+      try {
+        const archive = await this.disk.scan();
+        await this.reconcileDeleted(archive, protectedPaths);
+        await this.reconcileChanged(archive, protectedPaths);
+      }
       catch (error) {
         this.error = error; this.connected = false;
         this.archiveState = error.name === 'NotFoundError' ? 'missing' : 'error';
