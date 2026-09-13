@@ -1,22 +1,70 @@
-const PREFIX = '<!-- quiet-notes: ';
 export function encode(note) {
-  const meta = {title: note.title, tags: note.tags, originalPath: note.originalPath || null};
-  return `${PREFIX}${encodeURIComponent(JSON.stringify(meta))} -->\n${note.body}`;
+  const title = JSON.stringify(note.title || '');
+  const tags = JSON.stringify(note.tags || []);
+  const originalPath = note.originalPath ? `\noriginalPath: ${JSON.stringify(note.originalPath)}` : '';
+  const extra = Object.entries(note.frontmatter || {})
+    .filter(([key, value]) => !['title', 'tags', 'originalPath'].includes(key) && /^[A-Za-z][\w-]*$/.test(key) && typeof value === 'string' && !/[\r\n]/.test(value))
+    .map(([key, value]) => `\n${key}: ${value}`).join('');
+  return `---\ntitle: ${title}\ntags: ${tags}${originalPath}${extra}\n---\n${note.body}`;
 }
+
+function yamlValue(value) {
+  const trimmed = value.trim();
+  try { return JSON.parse(trimmed); } catch { return trimmed.replace(/^['"]|['"]$/g, ''); }
+}
+
+function yamlTags(value) {
+  const parsed = yamlValue(value);
+  if (Array.isArray(parsed)) return parsed.filter(tag => typeof tag === 'string');
+  const list = value.trim().match(/^\[(.*)\]$/);
+  return list ? list[1].split(',').map(tag => yamlValue(tag)).filter(tag => typeof tag === 'string' && tag) : [];
+}
+
 export function decode(text, path) {
   let meta = {}, body = text;
-  if (text.startsWith(PREFIX)) {
-    const end = text.indexOf(' -->\n');
-    if (end !== -1) {
-      try {
-        const parsed = JSON.parse(decodeURIComponent(text.slice(PREFIX.length, end)));
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) { meta = parsed; body = text.slice(end + 5); }
-      } catch {}
+  let frontmatter = false, offset = 0, values = {};
+  while (true) {
+    const header = text.slice(offset).match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    if (!header) break;
+    const block = {};
+    for (const line of header[1].split(/\r?\n/)) {
+      const field = line.match(/^([A-Za-z][\w-]*):[ \t]*(.*)$/);
+      if (field) block[field[1]] = field[2];
     }
+    if (!Object.keys(block).length) break;
+    frontmatter = true;
+    values = {...values, ...block};
+    offset += header[0].length;
+  }
+  if (frontmatter) {
+    const title = values.title === undefined ? undefined : yamlValue(values.title);
+    meta = {title, tags: values.tags === undefined ? [] : yamlTags(values.tags),
+      originalPath: values.originalPath === undefined ? null : yamlValue(values.originalPath),
+      frontmatter: Object.fromEntries(Object.entries(values).filter(([key]) => !['title', 'tags', 'originalPath'].includes(key)))};
+    body = text.slice(offset);
+  }
+  const fields = text.match(/^## tags:[ \t]*(\[[^\r\n]*\])[ \t]*\r?\n(?:[ \t]*\r?\n)?title:[ \t]*("(?:[^"\\\r\n]|\\.)*")[ \t]*(?:\r?\noriginalPath:[ \t]*("(?:[^"\\\r\n]|\\.)*"|null)[ \t]*)?(?:\r?\n\r?\n|$)/);
+  if (!frontmatter && fields) {
+    try {
+      const tags = JSON.parse(fields[1]), title = JSON.parse(fields[2]);
+      if (Array.isArray(tags) && tags.every(tag => typeof tag === 'string') && typeof title === 'string') {
+        meta = {tags, title, originalPath:fields[3] ? JSON.parse(fields[3]) : null};
+        body = text.slice(fields[0].length);
+      }
+    } catch {}
+  }
+  const header = !frontmatter && text.match(/^<!-- quiet-notes:\s*([\s\S]*?)-->(?:\r?\n|$)/);
+  if (header) {
+    try {
+      const payload = header[1].trim();
+      const parsed = JSON.parse(payload.startsWith('{') ? payload : decodeURIComponent(payload));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) { meta = parsed; body = text.slice(header[0].length); }
+    } catch {}
   }
   return {path, title: typeof meta.title === 'string' ? meta.title : path.split('/').pop().replace(/\.md$/i, ''),
     tags: Array.isArray(meta.tags) ? meta.tags.filter(t => typeof t === 'string') : [],
-    originalPath: typeof meta.originalPath === 'string' ? meta.originalPath : null, body, raw: text};
+    originalPath: typeof meta.originalPath === 'string' ? meta.originalPath : null,
+    frontmatter: meta.frontmatter || {}, body, raw: text};
 }
 export function safeName(value) {
   let name = value.trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, '-').replace(/[. ]+$/g, '').slice(0, 70);

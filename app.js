@@ -79,10 +79,13 @@ async function save() {
   clearTimeout(timer);
   if (!dirty || !current) return;
   const target = {...current}, text = encode(target);
-  await locked(() => vault.write(target.path, text, target.raw));
+  const folder = target.path.includes('/') ? target.path.slice(0,target.path.lastIndexOf('/')) : '';
+  const saved = await locked(() => vault.saveNamed(target, folder));
+  current.path = saved.path;
+  localStorage.setItem(`quiet-selected:${vaultId}`, saved.path);
   current.raw = text;
   const found = notes.find(n => n.path === target.path);
-  if (found) Object.assign(found, target, {raw:text, modified:Date.now()});
+  if (found) Object.assign(found, saved);
   if (encode(current) === text) {
     dirty = false; editorSaveStatus('saved'); syncStatus();
   } else { status('Сохранение…', 'pending'); clearTimeout(timer); timer = setTimeout(run(save), 0); }
@@ -314,8 +317,11 @@ function confirmArchiveMerge(count) {
   $('mergeArchiveCount').textContent = `Найдено Markdown-заметок: ${count}.`;
   return new Promise(resolve => {
     dialog.returnValue = '';
-    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'merge'), {once:true});
+    dialog.addEventListener('close', () => resolve(dialog.returnValue), {once:true});
     $('confirmMergeArchive').onclick = () => dialog.close('merge');
+    $('cancelArchiveMerge').onclick = () => {
+      if (confirm('Заменить заметки в браузере содержимым выбранной папки?\n\nВсе текущие заметки и корзина браузера будут заменены. Заметки, которые есть только в браузере, будут удалены без возможности отмены. Файлы в папке останутся без изменений.')) dialog.close('replace');
+    };
     $('otherArchive').onclick = () => { dialog.close('other'); choose(); };
     dialog.showModal();
   });
@@ -333,8 +339,21 @@ async function choose() {
     if (!sameFolder) {
       const replacement = new CachedVault(root, id);
       const imported = await replacement.disk.scan();
-      if (imported.notes.length && !await confirmArchiveMerge(imported.notes.length)) return;
-      await locked(() => replacement.mergeArchive(imported));
+      const choice = imported.notes.length ? await confirmArchiveMerge(imported.notes.length) : 'merge';
+      if (!['merge','replace'].includes(choice)) return;
+      await locked(async () => {
+        if (choice === 'replace') await replacement.replaceFromArchive();
+        else await replacement.mergeArchive(imported);
+        // Subsequent background work must use the newly selected archive.
+        vault = replacement;
+      });
+      if (choice === 'replace') {
+        current = null; dirty = false; clearTimeout(timer);
+        localStorage.removeItem(`quiet-selected:${id}`);
+        expandedFolders.clear();
+        localStorage.removeItem(`quiet-tree:${id}`);
+        $('search').value = '';
+      }
     }
     savedVault = {root, id};
     await setting('vault', {root, id});
@@ -384,9 +403,8 @@ $('folderFilter').onchange = () => { $('deleteFolder').disabled = !$('folderFilt
 $('folderFilterButton').onclick = () => toggleCustomSelect('folderFilter');
 $('noteFolderButton').onclick = () => toggleCustomSelect('noteFolder');
 $('refresh').onclick = run(async () => {
-  // Flush the backup queue without changing the local note collection.
-  try { await save(); } catch (error) { message(error.message); dirty = false; }
-  await scan();
+  await save();
+  await refreshArchiveList();
 });
 for (const value of ['tree','all','trash']) $(value).onclick = run(async () => {
   await save(); filter = value; tag = ''; selectedTrash.clear(); message(''); $('folderFilter').value = ''; renderFilters(); renderList();
@@ -440,9 +458,9 @@ $('confirmPurge').onclick = run(async () => {
 $('new').onclick = run(async () => {
   await save(); filter = 'all'; tag = ''; $('search').value = '';
   const folder = $('folderFilter').value;
-  const path = `${folder ? folder+'/' : ''}Заметка-${crypto.randomUUID()}.md`;
-  const note = {path, title:'Без названия', tags:[], body:''};
-  await locked(() => vault.write(path, encode(note))); await scan(); select(notes.find(n => n.path === path)); $('title').focus(); $('title').select();
+  const note = {title:'Без названия', tags:[], body:''};
+  const saved = await locked(() => vault.saveNamed(note, folder));
+  await scan(); select(notes.find(n => n.path === saved.path)); $('title').focus(); $('title').select();
 });
 $('addFolder').onclick = run(async () => {
   await save(); const name = prompt('Название новой папки:'); if (!name?.trim()) return;
@@ -545,9 +563,17 @@ document.addEventListener('click', event => {
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
 document.addEventListener('visibilitychange', () => { if (document.hidden && dirty) run(save)(); });
 // Background archive checks must never reselect the note and erase a draft.
+async function refreshArchiveList() {
+  const result = await locked(() => vault.scan(dirty && current ? [current.path] : []));
+  notes = result.notes; folders = result.folders;
+  if (current && !dirty && !notes.some(note => note.path === current.path)) {
+    current = null; $('editor').hidden = true;
+  }
+  renderFilters(); renderList(); syncStatus();
+}
 setInterval(() => {
-  if (vault) run(async () => { await locked(() => vault.flush()); syncStatus(); })();
-}, 15 * 60 * 1000);
+  if (vault && !document.hidden) run(refreshArchiveList)();
+}, 30 * 1000);
 async function init() {
   renderMenuSide(await setting('menu-side') || 'left');
   const stored = await setting('vault');
@@ -565,7 +591,7 @@ $('syncAccess').onclick = async () => {
       const granted = await permission === 'granted';
       if (!granted) throw new Error('Доступ к папке не предоставлен. Выберите папку архива заново.');
     }
-    await run(async () => { await save(); await locked(() => vault.flush()); syncStatus(); })();
+    await run(async () => { await save(); await refreshArchiveList(); })();
     if (vault.error) message(vault.archiveState === 'missing'
       ? 'Папка архива не найдена. Нажмите на красный индикатор, чтобы выбрать другую. Заметки сохранены в Chrome.'
       : vault.error.message);

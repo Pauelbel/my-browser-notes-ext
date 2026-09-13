@@ -40,6 +40,38 @@ test('Markdown round trip preserves Unicode and metadata', () => {
   const decoded = decode(encode(note), 'test.md');
   for (const key of Object.keys(note)) assert.deepEqual(decoded[key],note[key]);
 });
+test('YAML frontmatter and prior metadata formats still load', () => {
+  const note = {title:'Тестовая заметка 100% %20',tags:['тестовый_тег'],originalPath:null,body:'\nТекст\n'};
+  const text = encode(note);
+  assert.ok(text.startsWith('---\ntitle: "Тестовая заметка 100% %20"'));
+  assert.ok(text.includes('тестовый_тег'));
+  const legacy = `<!-- quiet-notes: ${encodeURIComponent(JSON.stringify({...note,body:undefined}))} -->\n${note.body}`;
+  const flat = `## tags: ${JSON.stringify(note.tags)}\ntitle: ${JSON.stringify(note.title)}\n\n${note.body}`;
+  const plainYaml = `---\ntitle: Тестовая заметка 100% %20\ntags: [тестовый_тег]\ncategory: Личное\nupdated: 2026-09-13\n---\n${note.body}`;
+  for (const source of [text,legacy,flat,plainYaml,text.replaceAll('\n','\r\n')]) {
+    const result = decode(source,'test.md');
+    assert.equal(result.title,note.title); assert.deepEqual(result.tags,note.tags);
+    assert.equal(result.body.replaceAll('\r\n','\n'),note.body);
+  }
+  const malicious = encode({...note,title:'--- <script>'});
+  assert.equal(decode(malicious,'x.md').title,'--- <script>');
+  const quoted = {...note,title:'Строка\n"с кавычками"',tags:['a\\b','"тег"']};
+  assert.equal(decode(encode(quoted),'x.md').title,quoted.title);
+  assert.deepEqual(decode(encode(quoted),'x.md').tags,quoted.tags);
+  const invalid = '## tags: [oops]\ntitle: "x"\n\nbody';
+  assert.equal(decode(invalid,'x.md').body,invalid);
+});
+test('adjacent external frontmatter blocks are merged and preserved on save', () => {
+  const source = '---\ntitle: "Черновик"\ntags: [локальный]\n---\n---\ntype: cheatsheet\ntags: [testing, qa, development]\ncategory: "03_Саморазвитие"\nupdated: 2026-09-13\n---\n# Тест';
+  const note = decode(source, 'test.md');
+  assert.deepEqual(note.tags, ['testing', 'qa', 'development']);
+  assert.equal(note.body, '# Тест');
+  assert.equal(note.frontmatter.category, '"03_Саморазвитие"');
+  const normalized = encode(note);
+  assert.equal((normalized.match(/^---$/gm) || []).length, 2);
+  assert.ok(normalized.includes('type: cheatsheet'));
+  assert.ok(normalized.includes('tags: ["testing","qa","development"]'));
+});
 test('path traversal is rejected and Windows file names are safe', () => {
   for (const path of ['../x','a/../b','/root','a\\b','a//b']) assert.throws(() => parts(path));
   assert.equal(safeName('CON'), 'Заметка'); assert.equal(safeName('a:b?'), 'a-b-');
@@ -127,10 +159,100 @@ test('merge preserves archive files, deduplicates equal notes and keeps conflict
   assert.equal(await disk.read('conflict.md'),'archive');
   assert.equal(await disk.read('same.md'),'same');
   assert.equal(await disk.read('only-local.md'),'local only');
-  assert.equal(decode(await disk.read('conflict (локальная версия).md'),'x.md').body,'local');
+  assert.equal(decode(await disk.read('conflict (браузерная копия).md'),'x.md').body,'local');
   assert.ok(state.folders.includes('folder'));
   await vault.mergeArchive(await disk.scan());
   assert.equal((await vault.cached()).notes.length,5);
+});
+test('scan imports new archive notes and folders once, preserving local edits', async () => {
+  const root = new Directory(), persist = persistence(), vault = new CachedVault(root,'import',persist), disk = new Vault(root);
+  await vault.write('a.md','original');
+  await disk.write('a.md','external','original');
+  await disk.write('nested/manual.md','# Written by hand');
+  await disk.directory('empty',true);
+  await vault.write('a.md','local draft','original');
+  const state = await vault.scan();
+  assert.equal(state.notes.find(n => n.path === 'a.md').body,'local draft');
+  assert.equal(state.notes.find(n => n.path === 'nested/manual.md').body,'# Written by hand');
+  assert.ok(state.folders.includes('empty'));
+  assert.equal((await vault.scan()).notes.length,2);
+  assert.equal(await disk.read('a.md'),'external');
+});
+test('scan does not resurrect notes with queued deletions behind an archive conflict', async () => {
+  const root = new Directory(), persist = persistence(), vault = new CachedVault(root,'queued-import',persist), disk = new Vault(root);
+  await vault.write('a.md','original'); await vault.write('b.md','delete me');
+  const b = (await vault.cached()).notes.find(n => n.path === 'b.md');
+  await disk.write('a.md','external','original');
+  await vault.write('a.md','local','original');
+  await vault.move(b,'.trash/b.md',{originalPath:'b.md'});
+  assert.equal((await vault.scan()).notes.some(n => n.path === 'b.md'),false);
+});
+test('title-based filenames rename safely and preserve collisions and offline edits', async () => {
+  const root = new Directory(), vault = new CachedVault(root,'named',persistence()), disk = new Vault(root);
+  const a = await vault.saveNamed({title:'План',body:'first',tags:[]},'Работа');
+  assert.equal(a.path,'Работа/План.md');
+  const b = await vault.saveNamed({title:'План',body:'second',tags:[]},'Работа');
+  assert.equal(b.path,'Работа/План (2).md');
+  assert.equal((await vault.saveNamed({...b,body:'edit'},'Работа')).path,b.path);
+  await disk.write('Работа/Итоги.md','external');
+  const renamed = await vault.saveNamed({...a,title:'Итоги',body:'updated'},'Работа');
+  assert.equal(renamed.path,'Работа/Итоги (2).md');
+  assert.equal(await disk.read('Работа/Итоги.md'),'external');
+  await assert.rejects(disk.read(a.path));
+  root.permission = 'prompt';
+  const offline = await vault.saveNamed({...renamed,title:'Архив'},'Работа');
+  assert.equal(offline.path,'Работа/Архив.md');
+  root.permission = 'granted'; await vault.scan();
+  assert.equal(decode(await disk.read(offline.path),offline.path).body,'updated');
+  assert.equal(vault.pending,0);
+});
+test('external deletions remove folders and put previously archived notes in trash', async () => {
+  const root = new Directory(), vault = new CachedVault(root,'external-delete',persistence()), disk = new Vault(root);
+  await vault.write('folder/a.md','saved'); await vault.scan();
+  await (await disk.directory('folder')).removeEntry('a.md'); await root.removeEntry('folder');
+  const state = await vault.scan();
+  assert.equal(vault.archiveState,'connected');
+  assert.equal(state.notes.some(n => n.path === 'folder/a.md'),false);
+  assert.equal(state.folders.includes('folder'),false);
+  assert.equal(state.notes.find(n => n.originalPath === 'folder/a.md').body,'saved');
+  assert.equal((await vault.scan()).notes.length,1);
+});
+test('deleted archive file with pending local writes is recovered without recreating the old file', async () => {
+  const root = new Directory(), vault = new CachedVault(root,'delete-dirty',persistence()), disk = new Vault(root);
+  await vault.write('Legends.md','old'); await vault.scan();
+  root.permission = 'prompt'; await vault.write('Legends.md','my edits','old');
+  await root.removeEntry('Legends.md'); root.permission = 'granted';
+  const state = await vault.scan();
+  assert.equal(vault.archiveState,'connected'); assert.equal(vault.pending,0);
+  assert.equal(state.notes.length,1); assert.equal(state.notes[0].body,'my edits');
+  assert.match(state.notes[0].path,/браузерная копия/);
+  await assert.rejects(disk.read('Legends.md'));
+});
+test('a protected unsaved editor note survives an external deletion until saved', async () => {
+  const root = new Directory(), vault = new CachedVault(root,'protected',persistence());
+  await vault.write('a.md','text'); await vault.scan(); await root.removeEntry('a.md');
+  assert.equal((await vault.scan(['a.md'])).notes[0].path,'a.md');
+  assert.equal((await vault.scan()).notes[0].originalPath,'a.md');
+});
+test('replacement keeps only archive data and discards the old outbox and trash', async () => {
+  const persist = persistence(), local = new CachedVault(null,'replace-only',persist);
+  await local.write('old.md','browser'); await local.write('.trash/old.md','old trash');
+  const root = new Directory(), disk = new Vault(root);
+  await disk.write('folder/new.md','archive'); await disk.write('.trash/new.md','archive trash');
+  const replacement = new CachedVault(root,'replace-only',persist);
+  await replacement.replaceFromArchive();
+  const state = await replacement.scan();
+  assert.deepEqual(state.notes.map(n => n.path).sort(),['.trash/new.md','folder/new.md']);
+  assert.deepEqual(state.outbox,[]);
+  await assert.rejects(disk.read('old.md'));
+  assert.equal(await disk.read('folder/new.md'),'archive');
+});
+test('replacement read failure preserves the entire browser collection', async () => {
+  const persist = persistence(), local = new CachedVault(null,'replace-fail',persist);
+  await local.write('draft.md','important');
+  const before = await local.cached(), root = new Directory(); root.missing = true;
+  await assert.rejects(new CachedVault(root,'replace-fail',persist).replaceFromArchive());
+  assert.deepEqual(await local.cached(),before);
 });
 test('trash restore and permanent deletion operate directly in the selected folder', async () => {
   const root = new Directory(), disk = new Vault(root), vault = new CachedVault(root,'trash',persistence());

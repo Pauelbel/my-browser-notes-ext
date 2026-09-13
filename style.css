@@ -34,7 +34,8 @@ main{flex:1;display:flex;flex-direction:column;width:100%;max-width:none;margin:
 #editor{flex:1;display:flex;flex-direction:column}
 #editor> :not(.rich-editor){flex-shrink:0}
 .rich-editor{flex:1;display:flex;flex-direction:column}
-.rich-editor>.tiptap{flex:1}
+.rich-editor>.tiptap{flex:1 0 auto}
+#editor>footer{position:relative;background:var(--surface);padding-top:8px;min-height:24px}
 @media(min-width:760px){#workspace{display:grid}}
 /* Layout uses two real columns rather than stretching every sidebar item as a grid row. */
 .control-panel{width:100%;min-height:0;padding:0;margin-bottom:12px;border:0;border-radius:0;background:transparent;justify-content:flex-start;flex-wrap:wrap;gap:8px}
@@ -77,6 +78,7 @@ main{flex:1;display:flex;flex-direction:column;width:100%;max-width:none;margin:
 .trash-empty p{font-size:13px;line-height:1.7;max-width:320px;margin:auto}
 .trash-sync{background:#faf5e8;border-radius:8px;padding:10px;color:#8b784d;font-size:12px;line-height:1.5}
 .confirm-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+#mergeArchiveDialog .confirm-actions{flex-wrap:wrap}
 #purgeNames{max-height:160px;overflow:auto;padding-left:20px;font-size:13px;line-height:1.8;overflow-wrap:anywhere}
 #deleteFolder{flex:none;padding:8px 10px;font-size:17px;line-height:1}
 #folderTrashDescription{overflow-wrap:anywhere}
@@ -236,7 +238,9 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,#list::-webkit-scrollbar,#editor
   #workspace,#workspace.trash-mode{min-height:0;grid-template-rows:minmax(0,1fr)}
   #sidebar{align-self:stretch;min-height:0;overflow:auto}
   #sidebar>#list{flex:1 1 0;min-height:0;max-height:none;margin-bottom:0;overflow:auto}
-  #workspace>#editor,#trashView{min-height:0;height:100%;overflow:auto}
-  #editor>.rich-editor{flex-shrink:0}
+  #trashView{min-height:0;height:100%;overflow:auto}
+  #workspace>#editor{min-height:0;height:100%;overflow:hidden}
+  #editor>.rich-editor{flex:1 1 0;min-height:0;overflow:auto;padding-right:14px}
+  #editor>.rich-editor>.tiptap{min-height:100%;padding-bottom:24px}
 }
 @media(max-width:600px){#workspace.trash-mode{grid-template-columns:84px minmax(0,1fr);gap:8px}.trash-mode #sidebar nav button{font-size:11px;padding:10px 6px}#trashView{padding:12px}.trash-heading h1{font-size:21px}.trash-actions{align-items:flex-start;gap:9px}.trash-actions button{width:100%}.trash-row{padding:12px 4px;gap:8px}.trash-empty{padding:35px 0}}
