@@ -1,11 +1,12 @@
 import {encode, safeName, matches, setting} from './storage.js';
 import {CachedVault} from './cached-vault.js';
+import {archiveAll} from './manual-archive.js';
 import {createEditor} from './vendor/editor.js';
 import {parseTags} from './tags.js';
+import {OpenAICompatibleProvider} from './llm-provider.js';
 const $ = id => document.getElementById(id);
 let vault, vaultId, notes = [], folders = [], current, filter = 'tree', tag = '', dirty = false, timer, chain = Promise.resolve();
 let expandedFolders = new Set();
-let savedVault = null;
 const clientId = crypto.randomUUID();
 const selectedTrash = new Set();
 let purgeSnapshot = [];
@@ -26,7 +27,7 @@ function status(text, state = '') {
   $('statusText').textContent = label;
   $('statusMark').hidden = !state; $('statusMark').textContent = state === 'error' ? '!' : '…';
 }
-function report(error) { console.error(error); message(error.message || String(error)); if (current) editorSaveStatus('error'); status('Не сохранено на диск', 'error'); }
+function report(error) { console.error(error); message(error.message || String(error)); if (current) editorSaveStatus('error'); status('Не удалось сохранить', 'error'); }
 function run(fn) { return (...args) => { chain = chain.then(() => fn(...args)).catch(report); return chain; }; }
 const locked = fn => navigator.locks.request('quiet-notes-files', fn);
 function option(value, text) { const el = document.createElement('option'); el.value = value; el.textContent = text; return el; }
@@ -46,24 +47,6 @@ function toggleCustomSelect(id) {
   const menu = $(`${id}Menu`), button = $(`${id}Button`), opening = menu.hidden;
   for (const other of ['folderFilter', 'noteFolder']) if (other !== id) { $(`${other}Menu`).hidden = true; $(`${other}Button`).setAttribute('aria-expanded', 'false'); }
   menu.hidden = !opening; button.setAttribute('aria-expanded', String(opening));
-}
-function requireFolder(text) {
-  notes = []; folders = ['']; current = null; dirty = false;
-  $('workspace').hidden = true; $('welcome').hidden = true;
-  $('folderRequiredText').textContent = text;
-  if (!$('folderRequired').open) $('folderRequired').showModal();
-}
-function folderUnavailable(error) {
-  if (!error) return false;
-  if (['NotFoundError', 'NotAllowedError', 'InvalidStateError', 'SecurityError'].includes(error.name)) return true;
-  return /folder|directory|папк|каталог|not found|access denied/i.test(error.message || '');
-}
-async function askForReplacementFolder() {
-  await setting('vault', null);
-  if (vault) {
-    vault.root = null; vault.disk = null; vault.connected = false; vault.error = null;
-    await scan();
-  }
 }
 function capture(bodyChanged = false) {
   if (!current || filter === 'trash') return;
@@ -92,10 +75,56 @@ async function save() {
   renderList();
   if (dirty) await save();
 }
-function counts() {
-  const text = rich.getText().trim();
-  $('words').textContent = `${text ? text.split(/\s+/).length : 0} слов`;
-  $('filename').textContent = current?.path || '';
+function counts() {}
+let chatHistory = [], chatLoading = false;
+const chatKey = () => `llm-chat:${vaultId || 'local'}:${current?.path || 'none'}`;
+function chatMarkdown(value) {
+  const escaped = value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return escaped
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g,'<em>$1</em>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/\n/g,'<br>');
+}
+function renderChat() {
+  const box = $('chatMessages'); box.replaceChildren();
+  box.hidden = !chatHistory.length;
+  for (const item of chatHistory) {
+    const message = document.createElement('article'); message.className = `chat-message ${item.role}`;
+    const label = document.createElement('small'); label.textContent = item.role === 'user' ? 'Вы' : 'LLM';
+    const text = document.createElement('div'); text.innerHTML = chatMarkdown(item.content);
+    message.append(label,text); box.append(message);
+  }
+  if (chatLoading) {
+    const loading = document.createElement('article'); loading.className = 'chat-message assistant chat-loading';
+    loading.innerHTML = '<span class="chat-spinner" aria-hidden="true"></span><span>LLM отвечает…</span>';
+    box.append(loading);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+async function loadChat() {
+  const key = chatKey(), history = current ? (await setting(key) || []) : [];
+  if (key !== chatKey()) return;
+  chatHistory = history;
+  renderChat();
+}
+async function saveChat() { await setting(chatKey(), chatHistory.slice(-20)); }
+async function askChat(question) {
+  if (!current) throw Error('Сначала откройте заметку.');
+  const config = await setting('llm-config') || {};
+  if (!config.baseUrl || !config.model) throw Error('Сначала настройте LLM.');
+  const context = `Название: ${current.title || 'Без названия'}\nТеги: ${(current.tags || []).join(', ') || 'нет'}\n\nТекст заметки:\n${current.body.slice(0, 30_000)}`;
+  chatHistory.push({role:'user',content:question}); chatLoading = true; renderChat(); await saveChat();
+  $('chatInput').value = ''; $('chatInput').disabled = $('chatSend').disabled = true;
+  try {
+    const answer = await new OpenAICompatibleProvider(config).ask([
+      {role:'system',content:'Отвечай на русском по содержимому текущей заметки. Не меняй файлы и не описывай внутренние рассуждения. Если в заметке нет ответа, скажи об этом прямо.'},
+      {role:'user',content:context},
+      ...chatHistory.slice(-8).map(item => ({role:item.role === 'assistant' ? 'assistant' : 'user',content:item.content}))
+    ]);
+    chatHistory.push({role:'assistant',content:answer}); await saveChat(); renderChat();
+  } finally { chatLoading = false; renderChat(); $('chatInput').disabled = $('chatSend').disabled = false; $('chatInput').focus(); }
 }
 function snippet(markdown) {
   return markdown.replace(/<img\b[^>]*>/gi,'').replace(/<[^>]+>/g,' ').replace(/!\[([^\]]*)\]\([^)]*\)/g,'$1').replace(/\[([^\]]+)\]\([^)]*\)/g,'$1')
@@ -103,22 +132,7 @@ function snippet(markdown) {
     .replace(/[*_`~]/g,'').replace(/\s+/g,' ').trim().slice(0,90);
 }
 function syncStatus() {
-  if (!vault) return;
-  const connected = vault.archiveState === 'connected' && !vault.pending;
-  const missing = vault.archiveState === 'missing';
-  const failed = missing || vault.archiveState === 'error';
-  $('syncNotice').hidden = false;
-  $('syncNotice').classList.toggle('connected', connected);
-  $('syncNotice').classList.toggle('failed', failed);
-  $('syncText').textContent = vault.error?.message || vault.syncNotice || (connected ? 'Все изменения записаны в архив' : 'Нажмите, чтобы подключить архив');
-  $('syncAccess').textContent = connected ? '● Архив подключён' : missing ? '● Папка не найдена' : failed ? '● Ошибка архива' : '● Подключить архив';
-  $('syncAccess').title = $('syncText').textContent;
-  if (vault.pending) status('✓ В Chrome · архив ожидает записи', 'pending');
-  else if (!vault.root) status('✓ Сохранено в Chrome', '');
-  else if (!vault.connected) status('✓ В Chrome · архив отключён', 'pending');
-  else status('✓ Сохранено', '');
-  $('trashSync').hidden = !vault.pending && !vault.error && !vault.syncNotice;
-  $('trashSync').textContent = vault.error?.message || vault.syncNotice || 'Изменения сохранены в Chrome и будут добавлены в резервный архив при подключении папки.';
+  status('Сохранено в Chrome');
 }
 function renderNoteTags() {
   $('noteTags').replaceChildren();
@@ -194,7 +208,7 @@ function renderTree(list) {
       .sort((a,b) => (a.title || '').localeCompare(b.title || '', 'ru'));
     for (const folder of directFolders) {
       const open = query || expandedFolders.has(folder);
-      const row = document.createElement('button'); row.className = 'tree-folder'; row.style.paddingLeft = `${8 + depth * 16}px`;
+      const row = document.createElement('button'); row.className = 'tree-folder'; row.style.paddingLeft = `${6 + depth * 10}px`;
       row.setAttribute('aria-expanded', String(open));
       const arrow = document.createElement('span'); arrow.className = 'tree-arrow'; arrow.textContent = open ? '▾' : '▸';
       const label = document.createElement('span'); label.textContent = folder.split('/').pop(); row.append(arrow, label);
@@ -206,7 +220,7 @@ function renderTree(list) {
     }
     for (const note of directNotes) {
       const row = document.createElement('button'); row.className = 'tree-note' + (current?.path === note.path ? ' selected' : '');
-      row.style.paddingLeft = `${28 + depth * 16}px`;
+      row.style.paddingLeft = `${20 + depth * 10}px`;
       const bullet = document.createElement('span'); bullet.className = 'tree-bullet'; bullet.textContent = '•';
       const label = document.createElement('span'); label.textContent = note.title || 'Без названия'; row.append(bullet, label);
       row.title = snippet(note.body) || 'Пустая заметка';
@@ -286,7 +300,7 @@ function select(note) {
   document.querySelectorAll('.toolbar button').forEach(b => b.disabled = trashed);
   $('noteMenuButton').hidden = trashed; $('noteMenu').hidden = true; $('restore').hidden = !trashed;
   editorSaveStatus(trashed ? 'trash' : 'saved', note.modified);
-  syncStatus(); if (trashed) status('В корзине · можно восстановить'); counts(); renderList();
+  syncStatus(); if (trashed) status('В корзине · можно восстановить'); counts(); loadChat().catch(report); renderList();
 }
 async function scan() {
   const result = await locked(() => vault.scan()); notes = result.notes; folders = result.folders;
@@ -297,13 +311,13 @@ async function scan() {
   }
   syncStatus();
 }
-async function activate(root, id) {
+async function activate(id) {
   selectedTrash.clear(); $('trashSearch').value = '';
-  vault = new CachedVault(root, id); vaultId = id; current = null; dirty = false;
+  vault = new CachedVault(null, id, setting, {localOnly:true}); vaultId = id; current = null; dirty = false;
   $('editor').hidden = true; $('welcome').hidden = true; $('workspace').hidden = false;
-  $('folderInfo').textContent = root?.name || 'Резервная папка не выбрана.';
   message('');
-  await vault.bootstrapFromArchive();
+  // Persist the local-only state once to discard the obsolete sync queue.
+  await locked(async () => vault.persist(vault.key, await vault.state()));
   const cached = await vault.cached(); notes = cached.notes; folders = cached.folders; renderFilters(); renderList();
   const lastPath = localStorage.getItem(`quiet-selected:${id}`);
   const initial = notes.find(n => n.path === lastPath && !n.path.startsWith('.trash/')) || notes.find(n => !n.path.startsWith('.trash/'));
@@ -311,60 +325,30 @@ async function activate(root, id) {
   await scan();
   if (!current && notes.length) { const note = notes.find(n => !n.path.startsWith('.trash/')); if (note) select(note); }
 }
-// Call the picker directly in a click handler to preserve browser user activation.
-function confirmArchiveMerge(count) {
-  const dialog = $('mergeArchiveDialog');
-  $('mergeArchiveCount').textContent = `Найдено Markdown-заметок: ${count}.`;
-  return new Promise(resolve => {
-    dialog.returnValue = '';
-    dialog.addEventListener('close', () => resolve(dialog.returnValue), {once:true});
-    $('confirmMergeArchive').onclick = () => dialog.close('merge');
-    $('cancelArchiveMerge').onclick = () => {
-      if (confirm('Заменить заметки в браузере содержимым выбранной папки?\n\nВсе текущие заметки и корзина браузера будут заменены. Заметки, которые есть только в браузере, будут удалены без возможности отмены. Файлы в папке останутся без изменений.')) dialog.close('replace');
-    };
-    $('otherArchive').onclick = () => { dialog.close('other'); choose(); };
-    dialog.showModal();
-  });
-}
-async function choose() {
-  if (dirty) { message('Сначала дождитесь сохранения текущей заметки.'); return; }
+let archiving = false;
+async function archiveEverything() {
+  if (archiving || !vault) return;
+  archiving = true;
+  const buttons = [$('archiveAll'), $('archiveSettings')];
+  buttons.forEach(button => { button.disabled = true; button.textContent = 'Архивация…'; });
   try {
-    const root = await window.showDirectoryPicker({id:'quiet-notes', mode:'readwrite'});
-    const state = await root.queryPermission({mode:'readwrite'});
-    if (state !== 'granted' && await root.requestPermission({mode:'readwrite'}) !== 'granted') {
-      throw new Error('Доступ к записи в папку не предоставлен.');
-    }
-    const id = vaultId || savedVault?.id || 'local';
-    const sameFolder = savedVault?.root ? await savedVault.root.isSameEntry(root).catch(() => false) : false;
-    if (!sameFolder) {
-      const replacement = new CachedVault(root, id);
-      const imported = await replacement.disk.scan();
-      const choice = imported.notes.length ? await confirmArchiveMerge(imported.notes.length) : 'merge';
-      if (!['merge','replace'].includes(choice)) return;
-      await locked(async () => {
-        if (choice === 'replace') await replacement.replaceFromArchive();
-        else await replacement.mergeArchive(imported);
-        // Subsequent background work must use the newly selected archive.
-        vault = replacement;
-      });
-      if (choice === 'replace') {
-        current = null; dirty = false; clearTimeout(timer);
-        localStorage.removeItem(`quiet-selected:${id}`);
-        expandedFolders.clear();
-        localStorage.removeItem(`quiet-tree:${id}`);
-        $('search').value = '';
-      }
-    }
-    savedVault = {root, id};
-    await setting('vault', {root, id});
-    filter = 'tree'; tag = ''; await activate(root, id); $('preferences').close();
-    if ($('folderRequired').open) $('folderRequired').close();
-    if (!vault.connected) message(vault.error?.message || 'Папка выбрана, но Chrome пока не дал доступ к записи в архив.');
-  } catch (error) { if (error.name !== 'AbortError') report(error); }
+    // Invoke the picker before any await to preserve the user's click gesture.
+    const root = await window.showDirectoryPicker({id:'notes-manual-archive', mode:'readwrite'});
+    await chain;
+    await save();
+    const snapshot = await locked(() => vault.cached());
+    const result = await archiveAll(root, snapshot);
+    message('Архив готов: ' + root.name + '/' + result.name + '. Сохранено заметок: ' + result.count + '.');
+  } catch (error) {
+    if (error.name !== 'AbortError') message(error.message || String(error));
+  } finally {
+    archiving = false;
+    buttons.forEach(button => { button.disabled = false; button.textContent = 'Архивировать всё'; });
+  }
 }
-$('choose').onclick = choose; $('changeFolder').onclick = choose;
-$('chooseRequired').onclick = choose;
-$('settings').onclick = () => $('preferences').showModal();
+$('archiveAll').onclick = archiveEverything;
+$('archiveSettings').onclick = archiveEverything;
+$('settings').onclick = async () => { await loadLLMSettings(); showSettingsTab('general'); $('preferences').showModal(); };
 const themeToggle = document.createElement('button');
 themeToggle.id = 'themeToggle'; themeToggle.type = 'button';
 $('settings').after(themeToggle);
@@ -388,6 +372,51 @@ themeToggle.onclick = () => {
 window.addEventListener('storage', event => {
   if (event.key === 'quiet-theme' && ['light','dark'].includes(event.newValue)) renderTheme(event.newValue);
 });
+function showSettingsTab(name) {
+  const llm = name === 'llm';
+  $('settingsGeneralPanel').hidden = llm; $('settingsLLMPanel').hidden = !llm;
+  $('settingsGeneral').classList.toggle('active', !llm); $('settingsLLM').classList.toggle('active', llm);
+  $('settingsGeneral').setAttribute('aria-selected', String(!llm)); $('settingsLLM').setAttribute('aria-selected', String(llm));
+}
+function llmConfigFromForm() {
+  return {enabled:true, autoProcess:false, baseUrl:$('llmBaseUrl').value.trim().replace(/\/+$/, ''), apiKey:$('llmApiKey').value,
+    model:$('llmModel').value.trim(), timeout:Number($('llmTimeout').value || 60) * 1000, systemPrompt:$('llmSystemPrompt').value.trim()};
+}
+async function endpointPermission(url) {
+  const parsed = new URL(url);
+  const origin = `${parsed.protocol}//${parsed.hostname}/*`;
+  if (!chrome.permissions) return;
+  if (!await chrome.permissions.contains({origins:[origin]}) && !await chrome.permissions.request({origins:[origin]})) throw Error('Не предоставлен доступ к адресу LLM.');
+}
+async function loadLLMSettings() {
+  const config = await setting('llm-config') || {};
+  $('llmBaseUrl').value = config.baseUrl || '';
+  $('llmApiKey').value = config.apiKey || '';
+  $('llmModel').value = config.model || '';
+  $('llmTimeout').value = Math.max(5, Math.round((config.timeout || 180_000) / 1000));
+  $('llmSystemPrompt').value = config.systemPrompt || '';
+  $('llmConfigResult').textContent = config.baseUrl && config.model ? 'LLM настроена для чата по заметке.' : 'Укажите подключение для чата по заметке.';
+}
+async function saveLLMSettings() {
+  const config = llmConfigFromForm();
+  if (!config.baseUrl || !config.model) throw Error('Заполните Base URL и Model.');
+  await endpointPermission(config.baseUrl);
+  await setting('llm-config',config);
+  $('llmConfigResult').textContent = 'Настройки LLM сохранены.';
+}
+async function testLLMConnection() {
+  const config = llmConfigFromForm();
+  if (!config.baseUrl) throw Error('Укажите Base URL.');
+  await endpointPermission(config.baseUrl);
+  const models = await new OpenAICompatibleProvider(config).testConnection();
+  $('llmModels').replaceChildren(...models.map(id => { const option = document.createElement('option'); option.value = id; return option; }));
+  if (!config.model && models[0]) $('llmModel').value = models[0];
+  $('llmConfigResult').textContent = models.length ? `Подключение установлено. Моделей: ${models.length}.` : 'Подключение установлено, но API не вернула список моделей.';
+}
+$('llmSave').onclick = () => saveLLMSettings().catch(error => { $('llmConfigResult').textContent = error.message || String(error); });
+$('llmTest').onclick = () => testLLMConnection().catch(error => { $('llmConfigResult').textContent = error.message || String(error); });
+$('settingsGeneral').onclick = () => showSettingsTab('general');
+$('settingsLLM').onclick = () => showSettingsTab('llm');
 $('placement').onclick = () => chrome.tabs.create({url:'chrome://settings/appearance'});
 $('openTab').onclick = () => chrome.tabs.create({url:chrome.runtime.getURL('index.html')});
 function renderMenuSide(side) {
@@ -404,7 +433,7 @@ $('folderFilterButton').onclick = () => toggleCustomSelect('folderFilter');
 $('noteFolderButton').onclick = () => toggleCustomSelect('noteFolder');
 $('refresh').onclick = run(async () => {
   await save();
-  await refreshArchiveList();
+  await refreshLocalList();
 });
 for (const value of ['tree','all','trash']) $(value).onclick = run(async () => {
   await save(); filter = value; tag = ''; selectedTrash.clear(); message(''); $('folderFilter').value = ''; renderFilters(); renderList();
@@ -491,6 +520,14 @@ $('confirmFolderTrash').onclick = run(async () => {
   } finally { $('workspace').inert = false; }
 });
 $('title').addEventListener('input', () => capture());
+$('chatForm').onsubmit = event => {
+  event.preventDefault(); const question = $('chatInput').value.trim(); if (!question) return;
+  askChat(question).catch(error => { message(error.message || String(error)); });
+};
+$('chatInput').addEventListener('keydown', event => {
+  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); $('chatForm').requestSubmit(); }
+});
+$('chatClear').onclick = async () => { chatHistory = []; await saveChat(); renderChat(); };
 $('noteMenuButton').onclick = event => {
   event.stopPropagation(); const open = $('noteMenu').hidden;
   $('noteMenu').hidden = !open; $('noteMenuButton').setAttribute('aria-expanded', String(open));
@@ -562,8 +599,8 @@ document.addEventListener('click', event => {
 });
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
 document.addEventListener('visibilitychange', () => { if (document.hidden && dirty) run(save)(); });
-// Background archive checks must never reselect the note and erase a draft.
-async function refreshArchiveList() {
+// Refresh changes from other extension windows without erasing a draft.
+async function refreshLocalList() {
   const result = await locked(() => vault.scan(dirty && current ? [current.path] : []));
   notes = result.notes; folders = result.folders;
   if (current && !dirty && !notes.some(note => note.path === current.path)) {
@@ -572,31 +609,16 @@ async function refreshArchiveList() {
   renderFilters(); renderList(); syncStatus();
 }
 setInterval(() => {
-  if (vault && !document.hidden) run(refreshArchiveList)();
+  if (vault && !document.hidden) run(refreshLocalList)();
 }, 30 * 1000);
 async function init() {
   renderMenuSide(await setting('menu-side') || 'left');
   const stored = await setting('vault');
-  savedVault = stored || null;
-  try { expandedFolders = new Set(JSON.parse(localStorage.getItem(`quiet-tree:${stored?.id || 'local'}`) || '[]')); } catch { expandedFolders = new Set(); }
-  await activate(stored?.root || null, stored?.id || 'local');
+  const id = await setting('collection-id') || stored?.id || 'local';
+  await setting('collection-id', id);
+  // Detach the old disk handle; browser notes and folders remain in this collection.
+  await setting('vault', null);
+  try { expandedFolders = new Set(JSON.parse(localStorage.getItem(`quiet-tree:${id}`) || '[]')); } catch { expandedFolders = new Set(); }
+  await activate(id);
 }
-$('syncAccess').onclick = async () => {
-  try {
-    if (!savedVault?.root || vault?.archiveState === 'missing') { await choose(); return; }
-    if (savedVault?.root && (!vault?.connected || vault.error)) {
-      const root = savedVault.root;
-      // Invoke before ANY await so the browser sees the actual button gesture.
-      const permission = root.requestPermission({mode:'readwrite'});
-      const granted = await permission === 'granted';
-      if (!granted) throw new Error('Доступ к папке не предоставлен. Выберите папку архива заново.');
-    }
-    await run(async () => { await save(); await refreshArchiveList(); })();
-    if (vault.error) message(vault.archiveState === 'missing'
-      ? 'Папка архива не найдена. Нажмите на красный индикатор, чтобы выбрать другую. Заметки сохранены в Chrome.'
-      : vault.error.message);
-  } catch (error) {
-    message(error.message || String(error));
-  }
-};
 init().catch(report);

@@ -154,6 +154,11 @@ main{flex:1;display:flex;flex-direction:column;width:100%;max-width:none;margin:
 .side-switch{display:flex;gap:6px}
 .side-switch button{min-width:76px;font-size:12px}
 .side-switch button.active{border-color:#000;background:#eaf0e3;font-weight:700}
+.llm-status{height:36px;padding:0 9px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--muted);font-size:11px;font-weight:700;white-space:nowrap}
+.llm-status.processing{color:#8b6910}.llm-status.checking{color:#536a95}.llm-status.done{color:var(--success)}.llm-status.error{color:var(--danger)}
+.settings-tabs{display:flex;gap:18px;margin:0 -1px 18px;border-bottom:1px solid var(--line)}.settings-tabs button{padding:8px 2px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--muted);font-size:13px;font-weight:650}.settings-tabs button.active{border-bottom-color:var(--accent);color:var(--ink)}
+.llm-settings{display:grid;gap:10px;margin:10px 0 20px}.llm-settings label{display:grid;gap:5px;color:var(--ink);font-size:12px;font-weight:650}.llm-settings input,.llm-settings textarea{width:100%;box-sizing:border-box;font:inherit;font-weight:400}.llm-settings textarea{min-height:140px;padding:12px 10px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);resize:vertical;line-height:1.45}.llm-buttons{display:flex;gap:8px;flex-wrap:wrap}.llm-settings details{font-size:12px}.llm-settings summary{cursor:pointer;color:var(--muted)}.llm-settings pre{max-height:160px;overflow:auto;padding:8px;border:1px solid var(--line);border-radius:7px;background:var(--soft);color:var(--muted);font:11px/1.45 ui-monospace,monospace;white-space:pre-wrap}
+.llm-settings .llm-auto{display:flex;align-items:center;gap:8px;font-weight:600}.llm-settings .llm-auto input{width:16px;height:16px;margin:0;accent-color:var(--success)}
 @media(min-width:760px){
   body[data-menu-side=right] #workspace{grid-template-columns:minmax(0,1fr) 280px}
   body[data-menu-side=right] #workspace>#editor{grid-column:1}
@@ -193,6 +198,12 @@ button:hover,.select-menu button:hover,.select-menu button.selected,.tag-suggest
 .tiptap td,.tiptap th{border-color:var(--line)}
 .tiptap [data-resize-handle=bottom-right]{border-color:var(--success)}
 .editor-save-status[data-state=error]{color:var(--danger)}
+.note-chat{flex:0 0 auto;margin-top:auto;border:1px solid var(--line);border-radius:12px;background:var(--soft);overflow:hidden}
+.chat-messages{display:flex;flex-direction:column;gap:8px;max-height:180px;min-height:64px;padding:10px;overflow:auto}.chat-empty{margin:auto;color:var(--muted);font-size:12px;text-align:center}.chat-message{max-width:88%;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--surface);font-size:12px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}.chat-message.user{align-self:flex-end;border-color:var(--success);background:var(--selected)}.chat-message small{display:block;margin-bottom:3px;color:var(--muted);font-size:10px;font-weight:700}
+.chat-loading{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px}.chat-spinner{width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--success);border-radius:50%;animation:chat-spin .75s linear infinite}@keyframes chat-spin{to{transform:rotate(360deg)}}
+.chat-message strong{font-weight:750}.chat-message code{padding:1px 4px;border-radius:4px;background:var(--soft);font:11px ui-monospace,monospace}.chat-message a{color:var(--success);text-decoration:underline}
+.chat-form{display:flex;align-items:flex-end;gap:7px;padding:8px;border-top:1px solid var(--line);background:var(--surface)}.chat-form textarea{min-height:36px;max-height:100px;margin:0;padding:7px 8px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);font:12px/1.4 Segoe UI,system-ui,sans-serif;resize:vertical}.chat-form button{height:36px;padding:0 10px;font-size:11px;white-space:nowrap}.chat-form #chatClear{background:var(--surface);color:var(--muted)}
+#chatMessages[hidden] + .chat-form{border-top:0}
 .header-actions #syncAccess{background:var(--soft);border-color:var(--line);color:var(--ink)}
 .header-actions #syncAccess:hover{background:var(--selected)}
 :root[data-theme=dark] .header-actions #syncNotice.connected #syncAccess{background:#263e2d;color:#9bd6a9;border-color:#50755a}
@@ -214,8 +225,8 @@ button:hover,.select-menu button:hover,.select-menu button.selected,.tag-suggest
 .tree-folder,.tree-note{display:block;width:100%;min-height:30px;overflow:hidden;border:0;border-radius:6px;background:transparent;color:var(--ink);font-size:12px;line-height:1.25;text-align:left;text-overflow:ellipsis;white-space:nowrap}
 .tree-folder{font-weight:650}
 .tree-note{color:var(--muted);font-weight:500}
-.tree-arrow{display:inline-block;width:18px;font-size:16px;line-height:.8;vertical-align:-1px}
-.tree-bullet{display:inline-block;width:15px;font-size:17px;line-height:.8;vertical-align:-2px}
+.tree-arrow{display:inline-block;width:14px;font-size:16px;line-height:.8;vertical-align:-1px}
+.tree-bullet{display:inline-block;width:12px;font-size:17px;line-height:.8;vertical-align:-2px}
 .tree-folder:hover,.tree-note:hover{background:var(--soft);color:var(--ink)}
 .tree-note.selected{background:var(--selected);color:var(--ink);font-weight:650}
 .tree-root-divider{margin:10px 8px 4px;padding-top:10px;border-top:1px solid var(--line);color:var(--muted);font-size:10px;font-weight:650;text-transform:uppercase;letter-spacing:.04em}

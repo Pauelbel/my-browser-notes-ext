@@ -3,11 +3,18 @@ import {Vault, encode, decode, parts, setting, safeName} from './storage.js';
 // Notes live in IndexedDB. A selected folder is an optional, asynchronous
 // Markdown archive: a missing or disconnected folder never blocks the editor.
 export class CachedVault {
-  constructor(root, id = 'local', persist = setting) {
+  constructor(root, id = 'local', persist = setting, {localOnly = false} = {}) {
+    this.localOnly = localOnly;
+    if (localOnly) root = null;
     this.root = root || null;
     this.disk = this.root ? new Vault(this.root) : null;
     this.key = `collection:${id}`;
-    this.persist = persist;
+    this.persist = localOnly ? async (key, value) => {
+      // Keep the collection intact, but never queue operations for an old folder.
+      if (value !== undefined) value = {...value, outbox:[]};
+      const result = await persist(key, value);
+      return result ? {...result, outbox:[]} : result;
+    } : persist;
     this.pending = 0; this.error = null; this.connected = false; this.warning = null; this.syncNotice = null;
     this.archiveState = root ? 'permission' : 'unconfigured';
   }
