@@ -3,6 +3,7 @@ import {CachedVault} from './cached-vault.js';
 import {archiveAll} from './manual-archive.js';
 import {createEditor} from './vendor/editor.js';
 import {parseTags} from './tags.js';
+import {mountAgent} from './agent-panel.js';
 const $ = id => document.getElementById(id);
 let vault, vaultId, notes = [], folders = [], current, filter = 'tree', tag = '', dirty = false, timer, chain = Promise.resolve();
 let expandedFolders = new Set();
@@ -10,6 +11,9 @@ const clientId = crypto.randomUUID();
 const selectedTrash = new Set();
 let purgeSnapshot = [];
 let folderTrashSnapshot = null;
+let renameFolderPath = null;
+let noteTrashSnapshot = null;
+let dragSource = null;
 const rich = createEditor($('body'), () => capture(true));
 const message = text => { $('message').textContent = text; $('message').hidden = !text; };
 const saveTime = value => new Intl.DateTimeFormat('ru', {hour:'2-digit', minute:'2-digit'}).format(value || Date.now());
@@ -115,14 +119,20 @@ function commitTags() {
 function renderList() {
   const inTrash = filter === 'trash';
   const inTree = filter === 'tree';
+  const inTags = filter === 'tags';
   $('emptyTrash').hidden = !inTrash;
   $('emptyTrash').disabled = !notes.some(note => note.path.startsWith('.trash/'));
   $('workspace').classList.toggle('tree-mode', inTree);
-  $('workspace').classList.remove('trash-mode');
-  $('trashView').hidden = true;
-  for (const value of ['tree','all','trash']) { $(value).classList.toggle('active', filter === value); $(value).setAttribute('aria-selected', String(filter === value)); }
+  $('workspace').classList.toggle('tags-mode', inTags);
+  $('workspace').classList.toggle('trash-mode', inTrash);
+  $('trashView').hidden = !inTrash;
+  $('tagView').hidden = !inTags;
+  $('treeActions').hidden = !inTree;
+  for (const [value, id] of [['tree','tree'],['tags','tagsView'],['trash','trash']]) { $(id).classList.toggle('active', filter === value); $(id).setAttribute('aria-selected', String(filter === value)); }
   const list = $('list'); list.classList.remove('tree-list'); list.replaceChildren();
   if (inTree) { renderTree(list); return; }
+  if (inTags) { renderTagView(); return; }
+  if (inTrash) { renderTrash(); return; }
   const folderFilter = $('folderFilter').value;
   const visible = notes.filter(n => (n.path.startsWith('.trash/') === inTrash) &&
     (inTrash || !folderFilter || n.path.substring(0,n.path.lastIndexOf('/')) === folderFilter) &&
@@ -157,28 +167,100 @@ function renderTree(list) {
       .sort((a,b) => (a.title || '').localeCompare(b.title || '', 'ru'));
     for (const folder of directFolders) {
       const open = query || expandedFolders.has(folder);
+      const item = document.createElement('div'); item.className = 'tree-item';
       const row = document.createElement('button'); row.className = 'tree-folder'; row.style.paddingLeft = `${6 + depth * 10}px`;
       row.setAttribute('aria-expanded', String(open));
       const arrow = document.createElement('span'); arrow.className = 'tree-arrow'; arrow.textContent = open ? '▾' : '▸';
       const label = document.createElement('span'); label.textContent = folder.split('/').pop(); row.append(arrow, label);
-      row.onclick = () => { if (expandedFolders.has(folder)) expandedFolders.delete(folder); else expandedFolders.add(folder); saveExpandedFolders(); renderList(); };
-      branch.append(row); if (open) branch.append(makeBranch(folder, depth + 1));
+      row.classList.toggle('selected', $('folderFilter').value === folder);
+      row.onclick = () => { $('folderFilter').value = folder; if (expandedFolders.has(folder)) expandedFolders.delete(folder); else expandedFolders.add(folder); saveExpandedFolders(); renderList(); };
+      makeDraggable(row, {type:'folder', path:folder}); makeDropTarget(item, folder);
+      const menu = makeTreeMenu([{label:'Переименовать', action:() => openRenameFolder(folder)}, {label:'Удалить', danger:true, action:() => requestFolderTrash(folder)}]);
+      item.append(row, menu); branch.append(item); if (open) branch.append(makeBranch(folder, depth + 1));
     }
     if (!path && directFolders.length && directNotes.length) {
       const divider = document.createElement('div'); divider.className = 'tree-root-divider'; divider.textContent = 'Заметки без папки'; branch.append(divider);
     }
     for (const note of directNotes) {
+      const item = document.createElement('div'); item.className = 'tree-item';
       const row = document.createElement('button'); row.className = 'tree-note' + (current?.path === note.path ? ' selected' : '');
       row.style.paddingLeft = `${20 + depth * 10}px`;
       const bullet = document.createElement('span'); bullet.className = 'tree-bullet'; bullet.textContent = '•';
       const label = document.createElement('span'); label.textContent = note.title || 'Без названия'; row.append(bullet, label);
       row.title = snippet(note.body) || 'Пустая заметка';
-      row.onclick = run(async () => { await save(); select(note); }); branch.append(row);
+      row.onclick = run(async () => { await save(); select(note); });
+      makeDraggable(row, {type:'note', path:note.path});
+      const menu = makeTreeMenu([{label:'Удалить', danger:true, action:() => requestNoteTrash(note)}]);
+      item.append(row, menu); branch.append(item);
     }
     return branch;
   };
-  list.classList.add('tree-list'); list.append(makeBranch('', 0));
-  if (!list.textContent.trim()) { const empty = document.createElement('p'); empty.className = 'empty'; empty.textContent = query ? 'Ничего не найдено' : 'Нет заметок и папок'; list.append(empty); }
+  const tree = makeBranch('', 0), hasEntries = tree.querySelector('.tree-item,.tree-root-divider');
+  const rootDrop = document.createElement('div'); rootDrop.className = 'tree-root-drop'; rootDrop.textContent = 'Переместить в корень';
+  makeDropTarget(rootDrop, '');
+  list.classList.add('tree-list'); list.append(tree, rootDrop);
+  if (!hasEntries) { const empty = document.createElement('p'); empty.className = 'empty'; empty.textContent = query ? 'Ничего не найдено' : 'Нет заметок и папок'; list.append(empty); }
+}
+function makeTreeMenu(items) {
+  const wrap = document.createElement('div'); wrap.className = 'tree-menu-wrap';
+  const trigger = document.createElement('button'); trigger.type = 'button'; trigger.className = 'tree-more'; trigger.textContent = '⋮'; trigger.title = 'Действия'; trigger.setAttribute('aria-label','Действия'); trigger.setAttribute('aria-haspopup','menu'); trigger.setAttribute('aria-expanded','false');
+  const menu = document.createElement('div'); menu.className = 'tree-menu'; menu.setAttribute('role','menu'); menu.hidden = true;
+  for (const item of items) { const button = document.createElement('button'); button.type = 'button'; button.textContent = item.label; button.setAttribute('role','menuitem'); if (item.danger) button.className = 'danger'; button.onclick = () => { menu.hidden = true; trigger.setAttribute('aria-expanded','false'); item.action(); }; menu.append(button); }
+  trigger.onclick = event => { event.stopPropagation(); closeTreeMenus(menu); const open = menu.hidden; menu.hidden = !open; trigger.setAttribute('aria-expanded', String(open)); };
+  wrap.append(trigger,menu); return wrap;
+}
+function closeTreeMenus(except) { document.querySelectorAll('.tree-menu').forEach(menu => { if (menu !== except) menu.hidden = true; }); document.querySelectorAll('.tree-more').forEach(button => { if (!except || !button.parentElement?.contains(except)) button.setAttribute('aria-expanded','false'); }); }
+function canDrop(source, parent) {
+  if (!source || (source.type !== 'folder' && source.type !== 'note')) return false;
+  const sourceParent = source.path.includes('/') ? source.path.slice(0,source.path.lastIndexOf('/')) : '';
+  if (source.type === 'folder' && (parent === source.path || parent.startsWith(source.path + '/'))) return false;
+  return sourceParent !== parent;
+}
+function makeDraggable(element, source) {
+  element.draggable = true;
+  element.addEventListener('dragstart', event => {
+    dragSource = source; element.classList.add('dragging'); element.setAttribute('aria-grabbed','true');
+    event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', JSON.stringify(source));
+  });
+  element.addEventListener('dragend', () => {
+    dragSource = null; document.querySelectorAll('.drop-target,.drop-invalid,.dragging').forEach(item => item.classList.remove('drop-target','drop-invalid','dragging'));
+    document.querySelectorAll('[aria-grabbed=true]').forEach(item => item.setAttribute('aria-grabbed','false'));
+  });
+}
+function makeDropTarget(element, parent) {
+  element.addEventListener('dragover', event => {
+    const valid = canDrop(dragSource, parent); element.classList.toggle('drop-invalid', !valid); element.classList.toggle('drop-target', valid);
+    if (valid) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; }
+  });
+  element.addEventListener('dragleave', event => { if (!element.contains(event.relatedTarget)) element.classList.remove('drop-target','drop-invalid'); });
+  element.addEventListener('drop', event => {
+    event.preventDefault(); element.classList.remove('drop-target','drop-invalid');
+    const source = dragSource; if (!canDrop(source,parent)) return;
+    run(() => moveDroppedItem(source, parent))();
+  });
+}
+function remapExpandedFolders(from, to) {
+  expandedFolders = new Set([...expandedFolders].map(path => path === from || path.startsWith(from + '/') ? to + path.slice(from.length) : path));
+  saveExpandedFolders();
+}
+async function moveDroppedItem(source, parent) {
+  await save();
+  const name = source.path.slice(source.path.lastIndexOf('/') + 1);
+  const destination = parent ? `${parent}/${name}` : name;
+  if (source.type === 'note') {
+    const note = notes.find(value => value.path === source.path);
+    if (!note) throw Error('Заметка больше не существует.');
+    await locked(() => vault.move(note, destination));
+    if (current?.path === source.path) current.path = destination;
+  } else {
+    await locked(() => vault.moveFolder(source.path, parent));
+    remapExpandedFolders(source.path, destination);
+    if (current?.path.startsWith(source.path + '/')) current.path = destination + current.path.slice(source.path.length);
+    if ($('folderFilter').value === source.path || $('folderFilter').value.startsWith(source.path + '/')) $('folderFilter').value = destination + $('folderFilter').value.slice(source.path.length);
+  }
+  if (parent) expandedFolders.add(parent); saveExpandedFolders();
+  await scan();
+  message(source.type === 'note' ? 'Заметка перемещена.' : 'Папка перемещена.');
 }
 function visibleTrash() {
   return notes.filter(n => n.path.startsWith('.trash/') && matches(n,$('trashSearch').value)).sort((a,b) => b.modified-a.modified);
@@ -198,7 +280,7 @@ function renderTrash() {
   $('trashCount').textContent = `Заметок в корзине: ${all.length}`;
   $('trashList').replaceChildren();
   for (const note of visible) {
-    const row = document.createElement('label'); row.className = 'trash-row';
+    const row = document.createElement('label'); row.className = 'card trash-card';
     const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = selectedTrash.has(note.path);
     checkbox.setAttribute('aria-label', `Выбрать заметку «${note.title || 'Без названия'}»`);
     row.classList.toggle('selected',checkbox.checked);
@@ -206,7 +288,7 @@ function renderTrash() {
       if (checkbox.checked) selectedTrash.add(note.path); else selectedTrash.delete(note.path);
       row.classList.toggle('selected',checkbox.checked); trashSelectionStatus();
     };
-    const content = document.createElement('span'); content.className = 'trash-row-content';
+    const content = document.createElement('span'); content.className = 'trash-card-content';
     const title = document.createElement('strong'); title.textContent = note.title || 'Без названия';
     const preview = document.createElement('span'); preview.className = 'trash-preview'; preview.textContent = snippet(note.body) || 'Пустая заметка';
     const origin = document.createElement('small'); origin.textContent = note.originalPath || 'Без папки';
@@ -225,15 +307,32 @@ function renderFilters() {
   $('folderFilter').replaceChildren(option('', 'Все папки'));
   for (const folder of folders.filter(Boolean)) $('folderFilter').append(option(folder, folder));
   if (folders.includes(selected)) $('folderFilter').value = selected;
-  $('deleteFolder').disabled = !$('folderFilter').value;
   $('noteFolder').replaceChildren(...folders.map(f => option(f, f || 'Без папки')));
   if (current) $('noteFolder').value = current.path.includes('/') ? current.path.slice(0,current.path.lastIndexOf('/')) : '';
   renderCustomSelect('folderFilter'); renderCustomSelect('noteFolder');
-  $('tagFilters').replaceChildren();
+  $('tagCloud').replaceChildren();
   const tags = [...new Set(notes.filter(n => !n.path.startsWith('.trash/')).flatMap(n => n.tags))].sort();
   for (const value of tags) {
     const button = document.createElement('button'); button.textContent = '#' + value; button.classList.toggle('active', tag === value);
-    button.onclick = () => { tag = tag === value ? '' : value; renderFilters(); renderList(); }; $('tagFilters').append(button);
+    button.onclick = () => { tag = tag === value ? '' : value; renderFilters(); renderList(); }; $('tagCloud').append(button);
+  }
+}
+function renderTagView() {
+  const list = $('tagNotes'); list.replaceChildren();
+  const visible = notes.filter(note => !note.path.startsWith('.trash/') && (!tag || note.tags.includes(tag)) && matches(note, $('search').value))
+    .sort((a,b) => b.modified - a.modified);
+  if (!visible.length) {
+    const empty = document.createElement('p'); empty.className = 'empty';
+    empty.textContent = tag ? `У тега #${tag} пока нет заметок.` : 'Добавьте теги к заметкам — они появятся здесь.';
+    list.append(empty); return;
+  }
+  for (const note of visible) {
+    const button = document.createElement('button'); button.className = 'card'; button.classList.toggle('selected', current?.path === note.path);
+    const title = document.createElement('strong'); title.textContent = note.title || 'Без названия';
+    const preview = document.createElement('small'); preview.textContent = snippet(note.body) || 'Пустая заметка';
+    const noteTags = document.createElement('span'); noteTags.className = 'card-tags'; noteTags.textContent = note.tags.map(value => '#' + value).join(' ');
+    button.append(title, preview); if (note.tags.length) button.append(noteTags);
+    button.onclick = () => { filter = 'tree'; tag = ''; renderFilters(); renderList(); select(note); }; list.append(button);
   }
 }
 function select(note) {
@@ -332,23 +431,16 @@ $('openTab').onclick = () => chrome.tabs.create({url:chrome.runtime.getURL('inde
 $('menuLeft').onclick = () => setMenuSide('left').catch(report);
 $('menuRight').onclick = () => setMenuSide('right').catch(report);
 $('search').oninput = renderList;
-$('folderFilter').onchange = () => { $('deleteFolder').disabled = !$('folderFilter').value; renderCustomSelect('folderFilter'); renderList(); };
+$('folderFilter').onchange = () => { renderCustomSelect('folderFilter'); renderList(); };
 $('folderFilterButton').onclick = () => toggleCustomSelect('folderFilter');
 $('noteFolderButton').onclick = () => toggleCustomSelect('noteFolder');
 $('refresh').onclick = run(async () => {
   await save();
   await refreshLocalList();
 });
-for (const value of ['tree','all','trash']) $(value).onclick = run(async () => {
+for (const [value, id] of [['tree','tree'],['tags','tagsView'],['trash','trash']]) $(id).onclick = run(async () => {
   await save(); filter = value; tag = ''; selectedTrash.clear(); message(''); $('folderFilter').value = ''; renderFilters(); renderList();
-  if (value === 'all') {
-    const last = localStorage.getItem(`quiet-selected:${vaultId}`);
-    const note = notes.find(n => n.path === last && !n.path.startsWith('.trash/')) || notes.find(n => !n.path.startsWith('.trash/'));
-    if (note) select(note); else { current = null; $('editor').hidden = true; }
-  } else if (value === 'trash') {
-    const note = notes.filter(n => n.path.startsWith('.trash/')).sort((a,b) => b.modified-a.modified)[0];
-    if (note) select(note);
-  }
+  if (value === 'tags' || value === 'trash') { current = null; $('editor').hidden = true; }
 });
 $('trashSearch').oninput = () => { selectedTrash.clear(); renderTrash(); };
 $('selectAllTrash').onchange = () => {
@@ -389,26 +481,39 @@ $('confirmPurge').onclick = run(async () => {
   await applyTrashAction('purge',snapshot);
 });
 $('new').onclick = run(async () => {
-  await save(); filter = 'all'; tag = ''; $('search').value = '';
+  await save(); filter = 'tree'; tag = ''; $('search').value = '';
   const folder = $('folderFilter').value;
   const note = {title:'Без названия', tags:[], body:''};
   const saved = await locked(() => vault.saveNamed(note, folder));
   await scan(); select(notes.find(n => n.path === saved.path)); $('title').focus(); $('title').select();
 });
-$('addFolder').onclick = run(async () => {
-  await save(); const name = prompt('Название новой папки:'); if (!name?.trim()) return;
-  await locked(() => vault.directory(safeName(name), true)); await scan();
-});
-$('deleteFolder').onclick = run(async () => {
-  const path = $('folderFilter').value;
-  if (!path) return;
+function openNewFolderDialog() {
+  $('newFolderName').value = '';
+  $('newFolderDialog').showModal();
+  $('newFolderName').focus();
+}
+$('createFolderTree').onclick = openNewFolderDialog;
+$('cancelNewFolder').onclick = () => $('newFolderDialog').close();
+$('newFolderForm').onsubmit = event => {
+  event.preventDefault();
+  const name = $('newFolderName').value.trim();
+  if (!name) return;
+  $('newFolderDialog').close();
+  run(async () => {
+    await save();
+    await locked(() => vault.directory(safeName(name), true));
+    await scan();
+  })();
+};
+function requestFolderTrash(path) { run(async () => {
+  $('folderFilter').value = path;
   await save(); await scan();
   if (!folders.includes(path)) throw Error('Папка больше не существует.');
   folderTrashSnapshot = {path, notes:notes.filter(n => n.path.startsWith(path + '/')).map(n => ({path:n.path,raw:n.raw})),
     folders:folders.filter(f => f === path || f.startsWith(path + '/'))};
   $('folderTrashDescription').textContent = `Папка «${path}». Заметок: ${folderTrashSnapshot.notes.length}. Вложенных папок: ${folderTrashSnapshot.folders.length-1}.`;
   $('folderTrashDialog').showModal();
-});
+})(); }
 $('cancelFolderTrash').onclick = () => { folderTrashSnapshot = null; $('folderTrashDialog').close(); };
 $('confirmFolderTrash').onclick = run(async () => {
   const snapshot = folderTrashSnapshot; folderTrashSnapshot = null; $('folderTrashDialog').close();
@@ -423,6 +528,26 @@ $('confirmFolderTrash').onclick = run(async () => {
       : `Папка «${snapshot.path}» удалена. Заметок перемещено в корзину: ${result.count}.`));
   } finally { $('workspace').inert = false; }
 });
+function openRenameFolder(path) {
+  renameFolderPath = path;
+  $('renameFolderName').value = path.split('/').pop();
+  $('renameFolderDialog').showModal();
+  $('renameFolderName').focus(); $('renameFolderName').select();
+}
+$('cancelRenameFolder').onclick = () => { renameFolderPath = null; $('renameFolderDialog').close(); };
+$('renameFolderForm').onsubmit = event => {
+  event.preventDefault();
+  const path = renameFolderPath, name = $('renameFolderName').value.trim();
+  if (!path || !name) return;
+  renameFolderPath = null; $('renameFolderDialog').close();
+  run(async () => {
+    await save();
+    const destination = await locked(() => vault.renameFolder(path, name));
+    $('folderFilter').value = destination;
+    if (current?.path.startsWith(path + '/')) current.path = destination + current.path.slice(path.length);
+    await scan(); message(`Папка переименована: «${destination}».`);
+  })();
+};
 $('title').addEventListener('input', () => capture());
 $('noteMenuButton').onclick = event => {
   event.stopPropagation(); const open = $('noteMenu').hidden;
@@ -471,25 +596,40 @@ $('noteFolder').onchange = run(async () => {
   if (destination === current.path) return;
   await locked(() => vault.move(current, destination)); current = null; await scan(); select(notes.find(n => n.path === destination));
 });
-$('delete').onclick = run(async () => {
-  $('noteMenu').hidden = true; $('noteMenuButton').setAttribute('aria-expanded', 'false');
-  await save(); const destination = `.trash/${crypto.randomUUID()}.md`;
-  await locked(() => vault.move(current, destination, {originalPath:current.path}));
-  current = null; $('editor').hidden = true; await scan(); message('Заметка в корзине. Её можно восстановить.');
+function requestNoteTrash(note) {
+  if (!note || note.path.startsWith('.trash/')) return;
+  noteTrashSnapshot = {path:note.path, title:note.title};
+  $('noteTrashDescription').textContent = `Заметка «${note.title || 'Без названия'}» будет перемещена в корзину.`;
+  $('noteTrashDialog').showModal();
+}
+$('delete').onclick = () => { $('noteMenu').hidden = true; $('noteMenuButton').setAttribute('aria-expanded', 'false'); requestNoteTrash(current); };
+$('cancelNoteTrash').onclick = () => { noteTrashSnapshot = null; $('noteTrashDialog').close(); };
+$('confirmNoteTrash').onclick = run(async () => {
+  const snapshot = noteTrashSnapshot; noteTrashSnapshot = null; $('noteTrashDialog').close();
+  if (!snapshot) return;
+  await save();
+  const note = notes.find(value => value.path === snapshot.path);
+  if (!note) throw Error('Заметка больше не существует.');
+  const destination = `.trash/${crypto.randomUUID()}.md`;
+  await locked(() => vault.move(note, destination, {originalPath:note.path}));
+  if (current?.path === note.path) { current = null; $('editor').hidden = true; }
+  await scan(); message('Заметка в корзине. Её можно восстановить.');
 });
 $('restore').onclick = run(async () => {
   const destination = current.originalPath || `Восстановленная-${crypto.randomUUID()}.md`;
   if (destination.startsWith('.trash/')) throw new Error('Некорректная папка восстановления');
-  await locked(() => vault.move(current, destination, {originalPath:null})); current = null; filter = 'all';
+  await locked(() => vault.move(current, destination, {originalPath:null})); current = null; filter = 'tree';
   await scan(); select(notes.find(n => n.path === destination)); message('Заметка восстановлена.');
 });
 document.addEventListener('keydown', event => {
+  if (document.body.classList.contains('agent-mode')) return;
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); run(save)(); }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); $(filter === 'trash' ? 'trashSearch' : 'search').focus(); }
   if (event.key === 'Escape') { $('noteMenu').hidden = true; $('noteMenuButton').setAttribute('aria-expanded', 'false'); renderTagSuggestions(false); }
 });
 document.addEventListener('click', event => {
   if (!event.target.closest('.note-menu-wrap')) { $('noteMenu').hidden = true; $('noteMenuButton').setAttribute('aria-expanded', 'false'); }
+  if (!event.target.closest('.tree-menu-wrap')) closeTreeMenus();
   if (!event.target.closest('.tag-picker')) renderTagSuggestions(false);
   if (!event.target.closest('.custom-select')) for (const id of ['folderFilter', 'noteFolder']) { $(`${id}Menu`).hidden = true; $(`${id}Button`).setAttribute('aria-expanded', 'false'); }
 });
@@ -518,3 +658,22 @@ async function init() {
   await activate(id);
 }
 init().catch(report);
+mountAgent({
+  async getNote() {
+    await chain;
+    if (!current || filter === 'trash') throw new Error('Откройте заметку, которую нужно передать агенту.');
+    await save();
+    return {title:current.title, body:current.body};
+  },
+  async saveAnswer(body) {
+    const operation = chain.then(async () => {
+      if (!vault) throw new Error('Хранилище заметок ещё не готово.');
+      await save();
+      const note = {title:`Ответ агента ${new Date().toLocaleString('ru')}`, tags:['агент'], body};
+      await locked(() => vault.saveNamed(note, ''));
+      await scan();
+    });
+    chain = operation.catch(report);
+    return operation;
+  },
+});

@@ -80,6 +80,27 @@ test('search finds title, body, tags and path', () => {
   const note = {title:'Планы', body:'Купить молоко', tags:['Дом'], path:'Быт/планы.md'};
   assert.ok(matches(note,'ДОМ молоко')); assert.ok(matches(note,'быт планы')); assert.ok(!matches(note,'работа'));
 });
+test('renaming a folder keeps its nested folders and notes together', async () => {
+  const vault = new CachedVault(null,'rename-folder',persistence(),{localOnly:true});
+  await vault.directory('Работа',true); await vault.directory('Работа/Идеи',true);
+  await vault.write('Работа/Идеи/план.md',encode({title:'План',body:'Текст',tags:['работа']}));
+  const destination = await vault.renameFolder('Работа','Проекты');
+  const state = await vault.cached();
+  assert.equal(destination,'Проекты');
+  assert.ok(state.folders.includes('Проекты/Идеи'));
+  assert.equal(state.notes[0].path,'Проекты/Идеи/план.md');
+  assert.equal(state.notes[0].title,'План');
+});
+test('moving a folder preserves its contents and rejects cycles and name conflicts', async () => {
+  const vault = new CachedVault(null,'move-folder',persistence(),{localOnly:true});
+  await vault.directory('Источник',true); await vault.directory('Источник/Вложенная',true); await vault.directory('Цель',true);
+  await vault.write('Источник/Вложенная/заметка.md',encode({title:'Заметка',body:'Текст',tags:[]}));
+  assert.equal(await vault.moveFolder('Источник','Цель'),'Цель/Источник');
+  assert.ok((await vault.cached()).notes.some(note => note.path === 'Цель/Источник/Вложенная/заметка.md'));
+  await assert.rejects(vault.moveFolder('Цель','Цель/Источник'), /внутрь неё самой/);
+  await vault.directory('Другая',true); await vault.directory('Цель/Другая',true);
+  await assert.rejects(vault.moveFolder('Другая','Цель'), /таким именем/);
+});
 test('tags accept spaces, commas, newlines and optional # without duplicates', () => {
   assert.deepEqual(parseTags(' работа  #идеи,личное\nработа '),['работа','идеи','личное']);
 });

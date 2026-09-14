@@ -262,6 +262,38 @@ export class CachedVault {
     if (!state.folders.includes(path)) { state.folders.push(path); state.outbox.push({type:'mkdir',path}); await this.persist(this.key,state); }
     await this.flush();
   }
+  async renameFolder(path, name) {
+    parts(path);
+    const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+    const destination = parent ? `${parent}/${safeName(name)}` : safeName(name);
+    return this.relocateFolder(path, destination);
+  }
+  async moveFolder(path, parent = '') {
+    parts(path); if (parent) parts(parent);
+    if (parent === path || parent.startsWith(path + '/')) throw Error('Нельзя переместить папку внутрь неё самой.');
+    const name = path.slice(path.lastIndexOf('/') + 1);
+    const destination = parent ? `${parent}/${name}` : name;
+    return this.relocateFolder(path, destination);
+  }
+  async relocateFolder(path, destination) {
+    const state = await this.state(), inside = value => value === path || value.startsWith(path + '/');
+    if (destination === path) return destination;
+    if (!state.folders.includes(path)) throw Error('Папка больше не существует.');
+    if (state.folders.some(folder => !inside(folder) && (folder === destination || folder.startsWith(destination + '/')))) throw Error('Папка с таким именем уже существует.');
+    const affectedFolders = state.folders.filter(inside);
+    const affectedNotes = state.notes.filter(note => note.path.startsWith(path + '/'));
+    const renamedPath = value => destination + value.slice(path.length);
+    state.folders = state.folders.map(folder => inside(folder) ? renamedPath(folder) : folder);
+    state.notes = state.notes.map(note => note.path.startsWith(path + '/') ? {...decode(note.raw, renamedPath(note.path)), modified:Date.now()} : note);
+    state.outbox.push(
+      ...affectedFolders.sort((a,b) => a.split('/').length - b.split('/').length).map(folder => ({type:'mkdir', path:renamedPath(folder)})),
+      ...affectedNotes.map(note => ({type:'write', path:renamedPath(note.path), text:note.raw, expected:undefined})),
+      ...affectedNotes.map(note => ({type:'delete', path:note.path, expected:note.raw})),
+      ...affectedFolders.sort((a,b) => b.split('/').length - a.split('/').length).map(folder => ({type:'rmdir', path:folder}))
+    );
+    await this.persist(this.key,state); await this.flush();
+    return destination;
+  }
   async move(note, destination, changes = {}) {
     parts(destination); const state = await this.state();
     if (state.notes.some(value => value.path === destination)) throw Error('Заметка с таким именем уже существует.');

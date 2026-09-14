@@ -1,0 +1,27 @@
+/* Отдельный раздел агента в стиле заметок. */
+body.agent-mode>main{display:none}
+#agentPanel{box-sizing:border-box;width:100%;max-width:1000px;margin:0 auto;padding:18px;display:flex;flex:1;flex-direction:column;gap:14px;min-height:0}
+.agent-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.agent-heading h1{margin:0;font-size:24px}.agent-heading p{margin:5px 0;color:#687068;font-size:12px}
+.agent-connection{border:1px solid #dce2d6;border-radius:12px;padding:12px;background:#fff}
+.agent-connection summary{cursor:pointer;font-weight:600}.agent-connection p,.agent-connection small{font-size:12px;line-height:1.6}
+.agent-connect-row{display:flex;gap:8px;margin:10px 0}.agent-connect-row input{flex:1;min-width:0}
+#agentMessages{flex:1;min-height:180px;max-height:55dvh;overflow:auto;display:flex;flex-direction:column;gap:16px;padding:4px}
+.agent-message{border:1px solid #dce2d6;border-radius:14px;padding:16px;background:#fff;overflow-wrap:anywhere}
+.agent-message.user{background:#fff8d9;margin-left:22px}.agent-message.assistant{margin-right:12px}
+.agent-role{display:block;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#6f7668;margin-bottom:10px}
+.agent-message p{margin:5px 0;line-height:1.65;font-size:14px;white-space:pre-wrap}.agent-message h2,.agent-message h3,.agent-message h4{margin:12px 0 8px}
+.agent-message pre{overflow:auto;background:#f3f5f0;padding:12px;border-radius:8px;white-space:pre;font:12px/1.5 Consolas,monospace}.agent-message code{font-family:Consolas,monospace}
+.agent-message button{font-size:11px;margin-top:14px}.agent-message small{display:block;margin-top:8px;color:#687068}
+.agent-empty{text-align:center;color:#687068;padding:36px 12px}
+#agentStats{font-size:12px;color:#58634f;padding:10px;border-radius:8px;background:#edf1e8;font-variant-numeric:tabular-nums;line-height:1.6}
+#agentTools{font-size:12px}#agentTools summary{cursor:pointer}#agentTools li{margin:6px 0;overflow-wrap:anywhere}
+#agentForm{display:flex;flex-direction:column;gap:10px}#agentInput{box-sizing:border-box;width:100%;min-height:90px;max-height:220px;resize:vertical;border:1px solid #bfc8b6;background:#fff;border-radius:12px;padding:12px;font:14px/1.5 Segoe UI,sans-serif}
+.agent-compose-footer,.agent-attachment{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.agent-compose-footer{justify-content:space-between}.agent-compose-footer small{font-size:11px;color:#687068}
+.agent-attachment{font-size:12px}.agent-attachment button{font-size:11px}#agentAttached{overflow-wrap:anywhere}
+#agentSend,#agentToggle{background:#FFD84D;color:#000;font-weight:600}#agentError{background:#fff1ee;color:#912f20;border:1px solid #e8c1b7;border-radius:8px;padding:12px;font-size:13px;margin:0}
+@media(max-width:420px){#agentPanel{padding:12px}.agent-heading h1{font-size:21px}.agent-message{padding:12px}.agent-connect-row{flex-wrap:wrap}.agent-heading{align-items:flex-start}#agentMessages{max-height:48dvh}}
+.agent-connection,.agent-message,#agentInput{background:var(--surface,#fff);color:var(--ink,#303a32);border-color:var(--line,#dce2d6)}
+.agent-heading p,.agent-role,.agent-message small,.agent-compose-footer small,.agent-empty{color:var(--muted,#687068)}
+#agentStats,.agent-message pre{background:var(--soft,#edf1e8);color:var(--ink,#303a32)}
+:root[data-theme=dark] .agent-message.user{background:#39351e}
