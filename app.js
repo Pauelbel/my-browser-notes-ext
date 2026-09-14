@@ -3,7 +3,6 @@ import {CachedVault} from './cached-vault.js';
 import {archiveAll} from './manual-archive.js';
 import {createEditor} from './vendor/editor.js';
 import {parseTags} from './tags.js';
-import {OpenAICompatibleProvider} from './llm-provider.js';
 const $ = id => document.getElementById(id);
 let vault, vaultId, notes = [], folders = [], current, filter = 'tree', tag = '', dirty = false, timer, chain = Promise.resolve();
 let expandedFolders = new Set();
@@ -76,56 +75,6 @@ async function save() {
   if (dirty) await save();
 }
 function counts() {}
-let chatHistory = [], chatLoading = false;
-const chatKey = () => `llm-chat:${vaultId || 'local'}:${current?.path || 'none'}`;
-function chatMarkdown(value) {
-  const escaped = value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  return escaped
-    .replace(/`([^`]+)`/g,'<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
-    .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g,'<em>$1</em>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
-    .replace(/\n/g,'<br>');
-}
-function renderChat() {
-  const box = $('chatMessages'); box.replaceChildren();
-  box.hidden = !chatHistory.length;
-  for (const item of chatHistory) {
-    const message = document.createElement('article'); message.className = `chat-message ${item.role}`;
-    const label = document.createElement('small'); label.textContent = item.role === 'user' ? 'Вы' : 'LLM';
-    const text = document.createElement('div'); text.innerHTML = chatMarkdown(item.content);
-    message.append(label,text); box.append(message);
-  }
-  if (chatLoading) {
-    const loading = document.createElement('article'); loading.className = 'chat-message assistant chat-loading';
-    loading.innerHTML = '<span class="chat-spinner" aria-hidden="true"></span><span>LLM отвечает…</span>';
-    box.append(loading);
-  }
-  box.scrollTop = box.scrollHeight;
-}
-async function loadChat() {
-  const key = chatKey(), history = current ? (await setting(key) || []) : [];
-  if (key !== chatKey()) return;
-  chatHistory = history;
-  renderChat();
-}
-async function saveChat() { await setting(chatKey(), chatHistory.slice(-20)); }
-async function askChat(question) {
-  if (!current) throw Error('Сначала откройте заметку.');
-  const config = await setting('llm-config') || {};
-  if (!config.baseUrl || !config.model) throw Error('Сначала настройте LLM.');
-  const context = `Название: ${current.title || 'Без названия'}\nТеги: ${(current.tags || []).join(', ') || 'нет'}\n\nТекст заметки:\n${current.body.slice(0, 30_000)}`;
-  chatHistory.push({role:'user',content:question}); chatLoading = true; renderChat(); await saveChat();
-  $('chatInput').value = ''; $('chatInput').disabled = $('chatSend').disabled = true;
-  try {
-    const answer = await new OpenAICompatibleProvider(config).ask([
-      {role:'system',content:'Отвечай на русском по содержимому текущей заметки. Не меняй файлы и не описывай внутренние рассуждения. Если в заметке нет ответа, скажи об этом прямо.'},
-      {role:'user',content:context},
-      ...chatHistory.slice(-8).map(item => ({role:item.role === 'assistant' ? 'assistant' : 'user',content:item.content}))
-    ]);
-    chatHistory.push({role:'assistant',content:answer}); await saveChat(); renderChat();
-  } finally { chatLoading = false; renderChat(); $('chatInput').disabled = $('chatSend').disabled = false; $('chatInput').focus(); }
-}
 function snippet(markdown) {
   return markdown.replace(/<img\b[^>]*>/gi,'').replace(/<[^>]+>/g,' ').replace(/!\[([^\]]*)\]\([^)]*\)/g,'$1').replace(/\[([^\]]+)\]\([^)]*\)/g,'$1')
     .replace(/^\s*(?:#{1,6}\s|>\s?|[-*+]\s(?:\[[ xX]\]\s)?|\d+\.\s)/gm,'')
@@ -300,7 +249,7 @@ function select(note) {
   document.querySelectorAll('.toolbar button').forEach(b => b.disabled = trashed);
   $('noteMenuButton').hidden = trashed; $('noteMenu').hidden = true; $('restore').hidden = !trashed;
   editorSaveStatus(trashed ? 'trash' : 'saved', note.modified);
-  syncStatus(); if (trashed) status('В корзине · можно восстановить'); counts(); loadChat().catch(report); renderList();
+  syncStatus(); if (trashed) status('В корзине · можно восстановить'); counts(); renderList();
 }
 async function scan() {
   const result = await locked(() => vault.scan()); notes = result.notes; folders = result.folders;
@@ -348,7 +297,7 @@ async function archiveEverything() {
 }
 $('archiveAll').onclick = archiveEverything;
 $('archiveSettings').onclick = archiveEverything;
-$('settings').onclick = async () => { await loadLLMSettings(); showSettingsTab('general'); $('preferences').showModal(); };
+$('settings').onclick = () => $('preferences').showModal();
 const themeToggle = document.createElement('button');
 themeToggle.id = 'themeToggle'; themeToggle.type = 'button';
 $('settings').after(themeToggle);
@@ -372,59 +321,14 @@ themeToggle.onclick = () => {
 window.addEventListener('storage', event => {
   if (event.key === 'quiet-theme' && ['light','dark'].includes(event.newValue)) renderTheme(event.newValue);
 });
-function showSettingsTab(name) {
-  const llm = name === 'llm';
-  $('settingsGeneralPanel').hidden = llm; $('settingsLLMPanel').hidden = !llm;
-  $('settingsGeneral').classList.toggle('active', !llm); $('settingsLLM').classList.toggle('active', llm);
-  $('settingsGeneral').setAttribute('aria-selected', String(!llm)); $('settingsLLM').setAttribute('aria-selected', String(llm));
-}
-function llmConfigFromForm() {
-  return {enabled:true, autoProcess:false, baseUrl:$('llmBaseUrl').value.trim().replace(/\/+$/, ''), apiKey:$('llmApiKey').value,
-    model:$('llmModel').value.trim(), timeout:Number($('llmTimeout').value || 60) * 1000, systemPrompt:$('llmSystemPrompt').value.trim()};
-}
-async function endpointPermission(url) {
-  const parsed = new URL(url);
-  const origin = `${parsed.protocol}//${parsed.hostname}/*`;
-  if (!chrome.permissions) return;
-  if (!await chrome.permissions.contains({origins:[origin]}) && !await chrome.permissions.request({origins:[origin]})) throw Error('Не предоставлен доступ к адресу LLM.');
-}
-async function loadLLMSettings() {
-  const config = await setting('llm-config') || {};
-  $('llmBaseUrl').value = config.baseUrl || '';
-  $('llmApiKey').value = config.apiKey || '';
-  $('llmModel').value = config.model || '';
-  $('llmTimeout').value = Math.max(5, Math.round((config.timeout || 180_000) / 1000));
-  $('llmSystemPrompt').value = config.systemPrompt || '';
-  $('llmConfigResult').textContent = config.baseUrl && config.model ? 'LLM настроена для чата по заметке.' : 'Укажите подключение для чата по заметке.';
-}
-async function saveLLMSettings() {
-  const config = llmConfigFromForm();
-  if (!config.baseUrl || !config.model) throw Error('Заполните Base URL и Model.');
-  await endpointPermission(config.baseUrl);
-  await setting('llm-config',config);
-  $('llmConfigResult').textContent = 'Настройки LLM сохранены.';
-}
-async function testLLMConnection() {
-  const config = llmConfigFromForm();
-  if (!config.baseUrl) throw Error('Укажите Base URL.');
-  await endpointPermission(config.baseUrl);
-  const models = await new OpenAICompatibleProvider(config).testConnection();
-  $('llmModels').replaceChildren(...models.map(id => { const option = document.createElement('option'); option.value = id; return option; }));
-  if (!config.model && models[0]) $('llmModel').value = models[0];
-  $('llmConfigResult').textContent = models.length ? `Подключение установлено. Моделей: ${models.length}.` : 'Подключение установлено, но API не вернула список моделей.';
-}
-$('llmSave').onclick = () => saveLLMSettings().catch(error => { $('llmConfigResult').textContent = error.message || String(error); });
-$('llmTest').onclick = () => testLLMConnection().catch(error => { $('llmConfigResult').textContent = error.message || String(error); });
-$('settingsGeneral').onclick = () => showSettingsTab('general');
-$('settingsLLM').onclick = () => showSettingsTab('llm');
-$('placement').onclick = () => chrome.tabs.create({url:'chrome://settings/appearance'});
-$('openTab').onclick = () => chrome.tabs.create({url:chrome.runtime.getURL('index.html')});
 function renderMenuSide(side) {
   document.body.dataset.menuSide = side;
   $('menuLeft').classList.toggle('active', side === 'left');
   $('menuRight').classList.toggle('active', side === 'right');
 }
 async function setMenuSide(side) { renderMenuSide(side); await setting('menu-side', side); }
+$('placement').onclick = () => chrome.tabs.create({url:'chrome://settings/appearance'});
+$('openTab').onclick = () => chrome.tabs.create({url:chrome.runtime.getURL('index.html')});
 $('menuLeft').onclick = () => setMenuSide('left').catch(report);
 $('menuRight').onclick = () => setMenuSide('right').catch(report);
 $('search').oninput = renderList;
@@ -520,14 +424,6 @@ $('confirmFolderTrash').onclick = run(async () => {
   } finally { $('workspace').inert = false; }
 });
 $('title').addEventListener('input', () => capture());
-$('chatForm').onsubmit = event => {
-  event.preventDefault(); const question = $('chatInput').value.trim(); if (!question) return;
-  askChat(question).catch(error => { message(error.message || String(error)); });
-};
-$('chatInput').addEventListener('keydown', event => {
-  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); $('chatForm').requestSubmit(); }
-});
-$('chatClear').onclick = async () => { chatHistory = []; await saveChat(); renderChat(); };
 $('noteMenuButton').onclick = event => {
   event.stopPropagation(); const open = $('noteMenu').hidden;
   $('noteMenu').hidden = !open; $('noteMenuButton').setAttribute('aria-expanded', String(open));
