@@ -193,6 +193,14 @@ button:hover,.select-menu button:hover,.select-menu button.selected,.tag-suggest
 .editor-save-status[data-state=error]{color:var(--danger)}
 .header-actions #syncAccess{background:var(--soft);border-color:var(--line);color:var(--ink)}
 .header-actions #syncAccess:hover{background:var(--selected)}
+:root{--archive-action:#ffd84d;--archive-action-hover:#ffce24}
+:root[data-theme=dark]{--archive-action:#e8c547;--archive-action-hover:#f3d45c}
+/* Keep the archive action easy to spot among the compact header controls. */
+.header-actions #archiveAll{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 12px;border:1px solid #000;border-radius:8px;background:var(--archive-action);color:#000;font-size:12px;font-weight:700;line-height:1;white-space:nowrap;box-shadow:2px 2px 0 #000}
+.header-actions #archiveAll::before{content:"↓";font-size:16px;font-weight:800;line-height:1}
+.header-actions #archiveAll:hover:not(:disabled){background:var(--archive-action-hover);transform:translate(-1px,-1px);box-shadow:3px 3px 0 #000}
+.header-actions #archiveAll:active:not(:disabled){transform:translate(1px,1px);box-shadow:1px 1px 0 #000}
+.header-actions #archiveAll:disabled{box-shadow:none}
 :root[data-theme=dark] .header-actions #syncNotice.connected #syncAccess{background:#263e2d;color:#9bd6a9;border-color:#50755a}
 :root[data-theme=dark] .header-actions #syncNotice.failed #syncAccess,:root[data-theme=dark] #message{background:var(--danger-bg);color:var(--danger);border-color:var(--danger)}
 .table-tools{position:relative}
