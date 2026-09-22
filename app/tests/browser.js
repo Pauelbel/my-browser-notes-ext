@@ -1,4 +1,4 @@
-import {Vault, encode, setting} from '../app/storage.js';
+import {Vault, encode, setting} from '../storage.js';
 if (location.hostname !== '127.0.0.1') throw Error('Тестовая страница доступна только на localhost');
 const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('quiet-notes-test', {create:true});
 const vault = new Vault(root);

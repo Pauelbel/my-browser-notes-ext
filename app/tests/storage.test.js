@@ -1,8 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {Vault, encode, decode, safeName, parts, matches} from '../app/storage.js';
-import {CachedVault} from '../app/cached-vault.js';
-import {parseTags} from '../app/tags.js';
+import {Vault, encode, decode, safeName, parts, matches} from '../storage.js';
+import {CachedVault} from '../cached-vault.js';
+import {parseTags} from '../tags.js';
 
 class Directory {
   kind = 'directory'; entriesMap = new Map(); permission = 'granted'; readPermission = null; missing = false;
