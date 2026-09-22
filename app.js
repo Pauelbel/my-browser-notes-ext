@@ -3,10 +3,10 @@ import {CachedVault} from './cached-vault.js';
 import {archiveAll} from './manual-archive.js';
 import {createEditor} from './vendor/editor.js';
 import {parseTags} from './tags.js';
-import {mountAgent} from './agent-panel.js';
 const $ = id => document.getElementById(id);
 let vault, vaultId, notes = [], folders = [], current, filter = 'tree', tag = '', dirty = false, timer, chain = Promise.resolve();
 let expandedFolders = new Set();
+let savedVault = null;
 const clientId = crypto.randomUUID();
 const selectedTrash = new Set();
 let purgeSnapshot = [];
@@ -85,7 +85,22 @@ function snippet(markdown) {
     .replace(/[*_`~]/g,'').replace(/\s+/g,' ').trim().slice(0,90);
 }
 function syncStatus() {
-  status('Сохранено в Chrome');
+  if (!vault) return;
+  const connected = vault.archiveState === 'connected' && !vault.pending;
+  const missing = vault.archiveState === 'missing';
+  const failed = missing || vault.archiveState === 'error';
+  $('syncNotice').hidden = false;
+  $('syncNotice').classList.toggle('connected', connected);
+  $('syncNotice').classList.toggle('failed', failed);
+  $('syncText').textContent = vault.error?.message || vault.syncNotice || (connected ? 'Все изменения записаны в папку' : 'Нажмите, чтобы подключить папку');
+  $('syncAccess').textContent = connected ? '● Папка подключена' : missing ? '● Папка не найдена' : failed ? '● Ошибка синхронизации' : '● Подключить папку';
+  $('syncAccess').title = $('syncText').textContent;
+  if (vault.pending) status('✓ В Chrome · ожидает записи в папку', 'pending');
+  else if (!vault.root) status('✓ Сохранено в Chrome', '');
+  else if (!vault.connected) status('✓ В Chrome · папка отключена', 'pending');
+  else status('✓ Сохранено', '');
+  $('trashSync').hidden = !vault.pending && !vault.error && !vault.syncNotice;
+  $('trashSync').textContent = vault.error?.message || vault.syncNotice || 'Изменения сохранены в Chrome и будут добавлены в папку при подключении.';
 }
 function renderNoteTags() {
   $('noteTags').replaceChildren();
@@ -359,13 +374,13 @@ async function scan() {
   }
   syncStatus();
 }
-async function activate(id) {
+async function activate(id, root = null) {
   selectedTrash.clear(); $('trashSearch').value = '';
-  vault = new CachedVault(null, id, setting, {localOnly:true}); vaultId = id; current = null; dirty = false;
+  vault = new CachedVault(root, id, setting, {localOnly: !root}); vaultId = id; current = null; dirty = false;
   $('editor').hidden = true; $('welcome').hidden = true; $('workspace').hidden = false;
+  $('folderInfo').textContent = root?.name || 'Папка с заметками не выбрана.';
   message('');
-  // Persist the local-only state once to discard the obsolete sync queue.
-  await locked(async () => vault.persist(vault.key, await vault.state()));
+  await vault.bootstrapFromArchive();
   const cached = await vault.cached(); notes = cached.notes; folders = cached.folders; renderFilters(); renderList();
   const lastPath = localStorage.getItem(`quiet-selected:${id}`);
   const initial = notes.find(n => n.path === lastPath && !n.path.startsWith('.trash/')) || notes.find(n => !n.path.startsWith('.trash/'));
@@ -396,6 +411,75 @@ async function archiveEverything() {
 }
 $('archiveAll').onclick = archiveEverything;
 $('archiveSettings').onclick = archiveEverything;
+// Call the picker directly in a click handler to preserve browser user activation.
+function confirmArchiveMerge(count) {
+  const dialog = $('mergeArchiveDialog');
+  $('mergeArchiveCount').textContent = `Найдено Markdown-заметок: ${count}.`;
+  return new Promise(resolve => {
+    dialog.returnValue = '';
+    dialog.addEventListener('close', () => resolve(dialog.returnValue), {once:true});
+    $('confirmMergeArchive').onclick = () => dialog.close('merge');
+    $('cancelArchiveMerge').onclick = () => {
+      if (confirm('Заменить заметки в браузере содержимым выбранной папки?\n\nВсе текущие заметки и корзина браузера будут заменены. Заметки, которые есть только в браузере, будут удалены без возможности отмены. Файлы в папке останутся без изменений.')) dialog.close('replace');
+    };
+    $('otherArchive').onclick = () => { dialog.close('other'); choose(); };
+    dialog.showModal();
+  });
+}
+async function choose() {
+  if (dirty) { message('Сначала дождитесь сохранения текущей заметки.'); return; }
+  try {
+    const root = await window.showDirectoryPicker({id:'quiet-notes', mode:'readwrite'});
+    const state = await root.queryPermission({mode:'readwrite'});
+    if (state !== 'granted' && await root.requestPermission({mode:'readwrite'}) !== 'granted') {
+      throw new Error('Доступ к записи в папку не предоставлен.');
+    }
+    const id = vaultId || savedVault?.id || 'local';
+    const sameFolder = savedVault?.root ? await savedVault.root.isSameEntry(root).catch(() => false) : false;
+    if (!sameFolder) {
+      const replacement = new CachedVault(root, id, setting);
+      const imported = await replacement.disk.scan();
+      const choice = imported.notes.length ? await confirmArchiveMerge(imported.notes.length) : 'merge';
+      if (!['merge','replace'].includes(choice)) return;
+      await locked(async () => {
+        if (choice === 'replace') await replacement.replaceFromArchive();
+        else await replacement.mergeArchive(imported);
+        // Subsequent background work must use the newly selected archive.
+        vault = replacement;
+      });
+      if (choice === 'replace') {
+        current = null; dirty = false; clearTimeout(timer);
+        localStorage.removeItem(`quiet-selected:${id}`);
+        expandedFolders.clear();
+        localStorage.removeItem(`quiet-tree:${id}`);
+        $('search').value = '';
+      }
+    }
+    savedVault = {root, id};
+    await setting('vault', {root, id});
+    filter = 'tree'; tag = ''; $('folderFilter').value = '';
+    await activate(id, root); $('preferences').close();
+  } catch (error) { if (error.name !== 'AbortError') report(error); }
+}
+$('changeFolder').onclick = choose;
+$('syncAccess').onclick = async () => {
+  try {
+    if (!savedVault?.root || vault?.archiveState === 'missing') { await choose(); return; }
+    if (savedVault?.root && (!vault?.connected || vault.error)) {
+      const root = savedVault.root;
+      // Invoke before ANY await so the browser sees the actual button gesture.
+      const permission = root.requestPermission({mode:'readwrite'});
+      const granted = await permission === 'granted';
+      if (!granted) throw new Error('Доступ к папке не предоставлен. Выберите папку заново.');
+    }
+    await run(async () => { await save(); await refreshLocalList(); })();
+    if (vault.error) message(vault.archiveState === 'missing'
+      ? 'Папка не найдена. Нажмите на индикатор, чтобы выбрать другую. Заметки сохранены в Chrome.'
+      : vault.error.message);
+  } catch (error) {
+    message(error.message || String(error));
+  }
+};
 $('settings').onclick = () => $('preferences').showModal();
 const themeToggle = document.createElement('button');
 themeToggle.id = 'themeToggle'; themeToggle.type = 'button';
@@ -622,7 +706,6 @@ $('restore').onclick = run(async () => {
   await scan(); select(notes.find(n => n.path === destination)); message('Заметка восстановлена.');
 });
 document.addEventListener('keydown', event => {
-  if (document.body.classList.contains('agent-mode')) return;
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); run(save)(); }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); $(filter === 'trash' ? 'trashSearch' : 'search').focus(); }
   if (event.key === 'Escape') { $('noteMenu').hidden = true; $('noteMenuButton').setAttribute('aria-expanded', 'false'); renderTagSuggestions(false); }
@@ -650,30 +733,10 @@ setInterval(() => {
 async function init() {
   renderMenuSide(await setting('menu-side') || 'left');
   const stored = await setting('vault');
+  savedVault = stored || null;
   const id = await setting('collection-id') || stored?.id || 'local';
   await setting('collection-id', id);
-  // Detach the old disk handle; browser notes and folders remain in this collection.
-  await setting('vault', null);
   try { expandedFolders = new Set(JSON.parse(localStorage.getItem(`quiet-tree:${id}`) || '[]')); } catch { expandedFolders = new Set(); }
-  await activate(id);
+  await activate(id, stored?.root || null);
 }
 init().catch(report);
-mountAgent({
-  async getNote() {
-    await chain;
-    if (!current || filter === 'trash') throw new Error('Откройте заметку, которую нужно передать агенту.');
-    await save();
-    return {title:current.title, body:current.body};
-  },
-  async saveAnswer(body) {
-    const operation = chain.then(async () => {
-      if (!vault) throw new Error('Хранилище заметок ещё не готово.');
-      await save();
-      const note = {title:`Ответ агента ${new Date().toLocaleString('ru')}`, tags:['агент'], body};
-      await locked(() => vault.saveNamed(note, ''));
-      await scan();
-    });
-    chain = operation.catch(report);
-    return operation;
-  },
-});
