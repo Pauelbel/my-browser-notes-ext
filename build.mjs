@@ -4,7 +4,7 @@ import path from 'node:path';
 import {createRequire} from 'node:module';
 const require = createRequire(import.meta.url);
 const tableRequire = createRequire(require.resolve('@tiptap/extension-table'));
-await build({entryPoints:['editor-source.js'],bundle:true,format:'esm',outfile:'vendor/editor.js',minify:true,legalComments:'linked',target:'chrome122',
+await build({entryPoints:['editor-source.js'],bundle:true,format:'esm',outfile:'app/vendor/editor.js',minify:true,legalComments:'linked',target:'chrome122',
   alias:{'@tiptap/pm/tables':tableRequire.resolve('@tiptap/pm/tables')}});
 const notices = [];
 for (const entry of await readdir('node_modules/.pnpm')) {
@@ -22,4 +22,4 @@ for (const entry of await readdir('node_modules/.pnpm')) {
     }
   }
 }
-await writeFile('vendor/THIRD_PARTY_NOTICES.txt',notices.map(n => n.text).join('\n\n--------------------\n\n'));
+await writeFile('app/vendor/THIRD_PARTY_NOTICES.txt',notices.map(n => n.text).join('\n\n--------------------\n\n'));

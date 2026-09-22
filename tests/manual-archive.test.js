@@ -1,8 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {archiveAll} from '../manual-archive.js';
-import {CachedVault} from '../cached-vault.js';
-import {encode} from '../storage.js';
+import {archiveAll} from '../app/manual-archive.js';
+import {CachedVault} from '../app/cached-vault.js';
+import {encode} from '../app/storage.js';
 
 class Directory {
   entries = new Map();

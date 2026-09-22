@@ -1,7 +1,7 @@
 import {readFile, writeFile} from 'node:fs/promises';
 import {deflateSync, inflateSync} from 'node:zlib';
 
-const source = await readFile('icons/icon-128.png');
+const source = await readFile('app/icons/icon-128.png');
 const width = source.readUInt32BE(16), height = source.readUInt32BE(20);
 let offset = 8, compressed = Buffer.alloc(0);
 while (offset < source.length) {
@@ -31,5 +31,5 @@ for (const size of [16,32,48,128]) {
   const pad = Math.max(1, Math.round(size * .06)), inner = size - pad * 2, out = Buffer.alloc((size * 4 + 1) * size);
   for (let y=0;y<size;y++) { out[y*(size*4+1)] = 0; for(let x=0;x<size;x++) { const dx=(x-pad+.5)/inner, dy=(y-pad+.5)/inner; const sx=Math.round(minX + dx*(maxX-minX)), sy=Math.round(minY + dy*(maxY-minY)); if(dx>=0&&dx<=1&&dy>=0&&dy<=1) pixels.copy(out, y*(size*4+1)+1+x*4, (sy*width+sx)*4, (sy*width+sx)*4+4); } }
   const ihdr=Buffer.alloc(13); ihdr.writeUInt32BE(size); ihdr.writeUInt32BE(size,4); ihdr[8]=8; ihdr[9]=6;
-  await writeFile(`icons/icon-${size}.png`, Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',ihdr),chunk('IDAT',deflateSync(out)),chunk('IEND',Buffer.alloc(0))]));
+  await writeFile(`app/icons/icon-${size}.png`, Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',ihdr),chunk('IDAT',deflateSync(out)),chunk('IEND',Buffer.alloc(0))]));
 }
