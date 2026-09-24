@@ -158,7 +158,7 @@ function renderList() {
     const preview = document.createElement('span'); preview.className = 'card-preview'; preview.textContent = snippet(note.body) || 'Пустая заметка';
     const tags = document.createElement('span'); tags.className = 'card-tags'; tags.textContent = note.tags.map(t => '#'+t).join(' ');
     button.append(title, preview); if (note.tags.length) button.append(tags);
-    button.onclick = run(async () => { await save(); select(note); }); list.append(button);
+    button.onclick = run(async () => { await save(); select(note); collapseMenuIfNarrow(); }); list.append(button);
   }
   if (!visible.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = inTrash ? 'Корзина пуста' : (notes.some(n => !n.path.startsWith('.trash/')) ? 'Здесь пока нет подходящих заметок' : 'Нет заметок'); list.append(p); }
 }
@@ -203,7 +203,7 @@ function renderTree(list) {
       const bullet = document.createElement('span'); bullet.className = 'tree-bullet'; bullet.textContent = '•';
       const label = document.createElement('span'); label.textContent = note.title || 'Без названия'; row.append(bullet, label);
       row.title = snippet(note.body) || 'Пустая заметка';
-      row.onclick = run(async () => { await save(); select(note); });
+      row.onclick = run(async () => { await save(); select(note); collapseMenuIfNarrow(); });
       makeDraggable(row, {type:'note', path:note.path});
       const menu = makeTreeMenu([{label:'Удалить', danger:true, action:() => requestNoteTrash(note)}]);
       item.append(row, menu); branch.append(item);
@@ -510,6 +510,21 @@ function renderMenuSide(side) {
   $('menuRight').classList.toggle('active', side === 'right');
 }
 async function setMenuSide(side) { renderMenuSide(side); await setting('menu-side', side); }
+// In the narrow single-column layout the note menu can be folded away to leave room for the editor.
+const narrowLayout = window.matchMedia('(max-width:759.98px)');
+function renderMenuCollapsed(collapsed) {
+  $('sidebar').classList.toggle('collapsed', collapsed);
+  $('menuToggle').setAttribute('aria-expanded', String(!collapsed));
+}
+function setMenuCollapsed(collapsed) {
+  renderMenuCollapsed(collapsed);
+  try { localStorage.setItem('quiet-menu-collapsed', collapsed ? '1' : '0'); } catch {}
+}
+function collapseMenuIfNarrow() { if (narrowLayout.matches) setMenuCollapsed(true); }
+let storedMenuCollapsed;
+try { storedMenuCollapsed = localStorage.getItem('quiet-menu-collapsed'); } catch {}
+renderMenuCollapsed(storedMenuCollapsed === '1');
+$('menuToggle').onclick = () => setMenuCollapsed(!$('sidebar').classList.contains('collapsed'));
 $('placement').onclick = () => chrome.tabs.create({url:'chrome://settings/appearance'});
 $('openTab').onclick = () => chrome.tabs.create({url:chrome.runtime.getURL('index.html')});
 $('menuLeft').onclick = () => setMenuSide('left').catch(report);
@@ -569,7 +584,7 @@ $('new').onclick = run(async () => {
   const folder = $('folderFilter').value;
   const note = {title:'Без названия', tags:[], body:''};
   const saved = await locked(() => vault.saveNamed(note, folder));
-  await scan(); select(notes.find(n => n.path === saved.path)); $('title').focus(); $('title').select();
+  await scan(); select(notes.find(n => n.path === saved.path)); collapseMenuIfNarrow(); $('title').focus(); $('title').select();
 });
 function openNewFolderDialog() {
   $('newFolderName').value = '';
