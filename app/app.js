@@ -90,11 +90,14 @@ function syncStatus() {
   const missing = vault.archiveState === 'missing';
   const failed = missing || vault.archiveState === 'error';
   $('syncNotice').hidden = false;
-  $('syncNotice').classList.toggle('connected', connected);
+  // Stay green while a connected folder is syncing so the dot does not blink on every save.
+  const linked = !failed && (vault.archiveState === 'connected' || vault.archiveState === 'syncing');
+  $('syncNotice').classList.toggle('connected', linked);
   $('syncNotice').classList.toggle('failed', failed);
   $('syncText').textContent = vault.error?.message || vault.syncNotice || (connected ? 'Все изменения записаны в папку' : 'Нажмите, чтобы подключить папку');
-  $('syncAccess').textContent = connected ? '● Папка подключена' : missing ? '● Папка не найдена' : failed ? '● Ошибка синхронизации' : '● Подключить папку';
-  $('syncAccess').title = $('syncText').textContent;
+  const label = linked ? 'Папка подключена' : missing ? 'Папка не найдена' : failed ? 'Ошибка синхронизации' : 'Подключить папку';
+  $('syncAccess').setAttribute('aria-label', label);
+  $('syncAccess').title = `${label}. ${$('syncText').textContent}`;
   if (vault.pending) status('✓ В Chrome · ожидает записи в папку', 'pending');
   else if (!vault.root) status('✓ Сохранено в Chrome', '');
   else if (!vault.connected) status('✓ В Chrome · папка отключена', 'pending');
@@ -392,8 +395,8 @@ let archiving = false;
 async function archiveEverything() {
   if (archiving || !vault) return;
   archiving = true;
-  const buttons = [$('archiveAll'), $('archiveSettings')];
-  buttons.forEach(button => { button.disabled = true; button.textContent = 'Архивация…'; });
+  const button = $('archiveSettings');
+  button.disabled = true; button.textContent = 'Архивация…';
   try {
     // Invoke the picker before any await to preserve the user's click gesture.
     const root = await window.showDirectoryPicker({id:'notes-manual-archive', mode:'readwrite'});
@@ -406,10 +409,9 @@ async function archiveEverything() {
     if (error.name !== 'AbortError') message(error.message || String(error));
   } finally {
     archiving = false;
-    buttons.forEach(button => { button.disabled = false; button.textContent = 'Архивировать всё'; });
+    button.disabled = false; button.textContent = 'Архивировать всё';
   }
 }
-$('archiveAll').onclick = archiveEverything;
 $('archiveSettings').onclick = archiveEverything;
 // Call the picker directly in a click handler to preserve browser user activation.
 function confirmArchiveMerge(count) {
