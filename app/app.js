@@ -527,6 +527,16 @@ let storedMenuCollapsed;
 try { storedMenuCollapsed = localStorage.getItem('quiet-menu-collapsed'); } catch {}
 renderMenuCollapsed(storedMenuCollapsed === '1');
 $('menuToggle').onclick = () => setMenuCollapsed(!$('sidebar').classList.contains('collapsed'));
+function renderZoom(percent) {
+  quietZoom.apply(percent);
+  $('zoom').value = String(quietZoom.clamp(percent));
+  $('zoomValue').textContent = `${quietZoom.clamp(percent)}%`;
+}
+Object.assign($('zoom'), {min:quietZoom.min, max:quietZoom.max, step:quietZoom.step});
+renderZoom(quietZoom.read());
+$('zoom').oninput = () => { renderZoom($('zoom').value); quietZoom.save($('zoom').value); };
+$('zoomReset').onclick = () => { renderZoom(quietZoom.fallback); quietZoom.save(quietZoom.fallback); };
+window.addEventListener('storage', event => { if (event.key === quietZoom.key) renderZoom(event.newValue ?? quietZoom.fallback); });
 $('placement').onclick = () => chrome.tabs.create({url:'chrome://settings/appearance'});
 $('openTab').onclick = () => chrome.tabs.create({url:chrome.runtime.getURL('index.html')});
 $('menuLeft').onclick = () => setMenuSide('left').catch(report);
