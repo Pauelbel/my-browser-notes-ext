@@ -54,13 +54,17 @@ export class CachedVault {
     try {
       while (state.outbox.length) {
         const op = state.outbox[0];
-        if (op.type === 'mkdir') await this.disk.directory(op.path, true);
+        if (op.type === 'mkdir') { await this.disk.directory(op.path, true); state.ignoredFolders = (state.ignoredFolders || []).filter(path => path !== op.path); }
         else if (op.type === 'rmdir') {
           try {
             const segments = parts(op.path), name = segments.pop();
             await (await this.disk.directory(segments.join('/'))).removeEntry(name);
           } catch (error) {
-            if (error.name === 'InvalidModificationError') this.warning = 'Заметки сохранены в архиве, но папки с другими файлами оставлены на диске.';
+            if (error.name === 'InvalidModificationError') {
+              // Foreign files stay on disk; just stop listing the folder so it does not reappear after every scan.
+              state.ignoredFolders = [...new Set([...(state.ignoredFolders || []), op.path])];
+              this.warning = 'Заметки сохранены в архиве, но папки с другими файлами оставлены на диске.';
+            }
             else if (error.name !== 'NotFoundError') throw error;
           }
         } else {
@@ -110,7 +114,8 @@ export class CachedVault {
       }
       changed = true;
     }
-    const folders = state.folders.filter(path => !path || archive.folders.includes(path) ||
+    const ignored = path => (state.ignoredFolders || []).includes(path) && !state.notes.some(note => note.path.startsWith(path + '/'));
+    const folders = state.folders.filter(path => !path || (archive.folders.includes(path) && !ignored(path)) ||
       state.outbox.some(op => op.type === 'mkdir' && op.path === path) ||
       state.notes.some(note => note.path.startsWith(path + '/')));
     if (folders.length !== state.folders.length) { state.folders = folders; changed = true; }
@@ -166,7 +171,7 @@ export class CachedVault {
         const pending = path => state.outbox.some(op => op.path.toLocaleLowerCase('ru') === path.toLocaleLowerCase('ru') ||
           (op.type === 'rmdir' && path.toLocaleLowerCase('ru').startsWith(op.path.toLocaleLowerCase('ru') + '/')));
         const added = archive.notes.filter(note => !known.has(note.path.toLocaleLowerCase('ru')) && !pending(note.path));
-        const folders = [...new Set([...state.folders, ...archive.folders.filter(path => !pending(path))])];
+        const folders = [...new Set([...state.folders, ...archive.folders.filter(path => !pending(path) && !((state.ignoredFolders || []).includes(path) && !state.notes.some(note => note.path.startsWith(path + '/'))))])];
         {
           state.notes.push(...added); state.folders = folders; state.initialized = true;
           state.archivePaths = [...new Set([...archive.notes.map(n => n.path), ...protectedPaths])];

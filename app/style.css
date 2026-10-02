@@ -258,3 +258,123 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,#list::-webkit-scrollbar,#editor
 .zoom-row{display:flex;align-items:center;gap:10px}
 .zoom-row input{flex:1;min-width:0;padding:0;border:0;background:transparent;accent-color:var(--ink)}
 .zoom-row output{min-width:42px;font-size:13px;font-variant-numeric:tabular-nums;text-align:right}
+/* Redesign: flat, quiet UI. Ghost buttons, hairlines, minimal chrome; the note text gets the space. */
+:root{--page:#faf9f6;--surface:#faf9f6;--soft:#f0eee9;--selected:#e9e7e1;--line:#e4e1da;--muted:#8b887f;--ink:#2a2926;--accent:#c96442;font-size:13px}
+:root[data-theme=dark]{--page:#1f1e1c;--surface:#1f1e1c;--soft:#2a2927;--selected:#34322f;--line:#3a3834;--muted:#95928a;--ink:#ebe9e3;--accent:#d97757}
+button{border:0;background:transparent;color:var(--ink);padding:3px 8px;border-radius:6px;font-size:12px;line-height:1.4}
+button:hover:not(:disabled),.select-menu button:hover,.tag-suggestions button:hover{background:var(--soft)}
+.primary{background:var(--ink);color:var(--page)}
+.primary:hover{background:var(--ink);filter:opacity(.85)}
+input,select{border:1px solid var(--line);border-radius:6px;padding:3px 8px;font-size:12px;background:transparent}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:1px solid var(--accent);outline-offset:1px}
+header{padding:5px 12px;gap:8px;border-bottom:1px solid var(--line)}
+.logo{width:22px;height:22px}
+.header-actions{gap:2px}
+#settings,#refresh,#themeToggle,.header-actions #syncAccess{width:26px;height:26px;padding:0;border:0;background:transparent;border-radius:6px;font-size:15px}
+#settings:hover,#refresh:hover,#themeToggle:hover,.header-actions #syncAccess:hover{background:var(--soft)}
+#settings img{width:16px;height:16px;opacity:.7}
+.header-actions #syncAccess::before{width:8px;height:8px}
+.header-actions #status{height:26px;padding:0 6px;border:0;background:transparent;color:var(--muted);font-size:11px}
+#statusText{font-weight:500}
+.saved-check{width:14px;height:14px}
+#statusMark{width:14px;height:14px;border:1px solid currentColor;background:transparent;color:inherit;font-size:10px}
+header .searchrow #search{height:26px;max-width:420px;padding:3px 10px;border:0;background:var(--soft);border-radius:6px;font-size:12px}
+header .searchrow #search:focus{background:var(--soft);outline:1px solid var(--line)}
+main{padding:8px 12px 0}
+#sidebar nav{margin:2px 0 6px;gap:2px}
+#sidebar nav button{padding:3px 8px;font-size:12px;color:var(--muted);border-radius:6px}
+#sidebar nav button.active{background:var(--soft);border:0;color:var(--ink);font-weight:600}
+.control-panel{margin-bottom:6px}
+.control-panel #new,.tree-actions button,.menu-toggle{display:block;width:100%;height:26px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-size:12px;font-weight:500;text-align:left}
+.control-panel #new:hover,.tree-actions button:hover,.menu-toggle:hover{background:var(--soft);color:var(--ink);filter:none}
+.control-panel #new::before,.tree-actions button::before{content:'+';display:inline-block;width:14px;font-size:14px}
+.tree-actions{margin:0 0 4px}
+.custom-select>button,.filters .custom-select>button{height:26px;padding:0 8px;border:0;border-radius:6px;background:var(--soft);font-size:12px}
+.custom-select>button[aria-expanded=true]{border-radius:6px 6px 0 0}
+.select-menu{border:1px solid var(--line);background:var(--page);box-shadow:0 6px 18px #0002}
+.card{padding:5px 8px;margin-bottom:1px;border:0;border-radius:6px}
+.card.selected{border:0;background:var(--selected);box-shadow:none}
+.card:hover{background:var(--soft)}
+.card strong{font-size:13px;font-weight:500}
+.card.selected strong{font-weight:600}
+.card small,.card .card-tags{font-size:10px;margin-top:2px}
+.card .card-preview{margin-top:1px;font-size:11px;-webkit-line-clamp:1}
+.tree-folder,.tree-note{min-height:24px;font-size:12px;border-radius:6px}
+.tree-more{height:22px}
+#editor{padding:0;border:0;border-radius:0;box-shadow:none;background:transparent}
+@media(min-width:760px){#workspace{grid-template-columns:230px minmax(0,1fr);gap:0 16px}body[data-menu-side=right] #workspace{grid-template-columns:minmax(0,1fr) 230px}#editor{padding:0 8px 0 20px;border:0;border-left:1px solid var(--line)}body[data-menu-side=right] #editor{border-left:0;border-right:1px solid var(--line);padding:0 20px 0 8px}}
+.note-heading{margin-bottom:4px}
+.note-heading .title,#title{height:34px;padding:0;border:0;background:transparent;font-size:20px;line-height:28px;font-weight:600;letter-spacing:-.3px}
+.metadata-row{margin-bottom:4px}
+.metadata .custom-select>button,.metadata #noteFolder{height:22px;font-size:11px;background:var(--soft)}
+.metadata-row .tag-entry{min-height:22px}
+.tag-entry input,#tags{height:22px;padding:0 8px;border:0;background:var(--soft);font-size:11px}
+.tag-entry button,.tags button{padding:2px 8px;border-radius:11px;font-size:11px;background:var(--soft)}
+.tag-picker #tagMenuButton{width:20px;height:20px;top:1px}
+.editor-save-status{min-height:18px;margin:0;font-size:10px;color:var(--muted)}
+.autosave-hint{display:none}
+#editorSaveIcon{width:12px;height:12px;font-size:8px}
+.toolbar{display:flex;gap:2px;margin:2px 0 4px;padding:3px 0;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;box-shadow:none}
+.toolbar-group{gap:0;padding:0;border:0;background:transparent}
+.toolbar-group+.toolbar-group{margin-left:4px;padding-left:4px;border-left:1px solid var(--line)}
+.toolbar button,.toolbar .more-button{height:24px;min-width:24px;padding:0 5px;font-size:13px;font-weight:600;color:var(--muted);border-radius:5px}
+.toolbar button:hover,.toolbar button.active,.toolbar .more-button:hover{background:var(--soft);color:var(--ink)}
+.toolbar button.active{background:var(--selected)}
+.toolbar .more-button{width:24px;font-size:16px}
+.note-menu-wrap{flex-basis:24px;height:24px}
+.toolbar .note-menu,.note-menu{top:28px;border:1px solid var(--line);background:var(--page);border-radius:8px}
+.rich-editor{font-size:15px}
+.tiptap{padding:6px 0 24px;line-height:1.7}
+.tag-heading h1,.trash-heading h1{font-size:17px;font-weight:600}
+.tag-heading p,.trash-heading p{font-size:11px;margin-bottom:10px}
+.tag-cloud{gap:4px;padding-bottom:10px}
+.tag-cloud button{padding:2px 9px;font-size:11px}
+.trash-actions{padding:8px 0}
+.trash-actions button,#emptyTrash,.trash-heading #emptyTrash{padding:3px 8px;min-height:0;font-size:11px;border:0;background:transparent}
+.danger,#emptyTrash{color:var(--danger);background:transparent;border:0}
+.danger:hover,#emptyTrash:hover:not(:disabled){background:var(--danger-bg)}
+.welcome{padding:30px 8px}
+.welcome h1{font-size:18px}
+.paper{transform:rotate(-6deg) scale(.7);margin-bottom:6px}
+dialog{padding:16px;border:1px solid var(--line);border-radius:10px;background:var(--page);box-shadow:0 12px 40px #0003}
+dialog h2{font-size:15px}
+dialog h3{font-size:12px;margin:14px 0 4px}
+dialog p{font-size:12px;line-height:1.5}
+dialog button:not(.primary):not(.danger){border:1px solid var(--line)}
+.confirm-actions{margin-top:12px;gap:6px}
+.side-switch button.active{background:var(--selected);border-color:var(--line)}
+#title:focus-visible{outline:0}
+/* Zones: tinted chrome (header + sidebar) around a lighter editor panel; the formatting bar floats at the bottom. */
+:root{--side:#ece9e2;--panel:#faf9f6;--bar:#e2dfd7;--soft:#e2dfd7;--selected:#d9d6cd;--line:#d6d3ca;--accent:#c4552f;--f0:#c96442;--f1:#7a6fd0;--f2:#3f9a78;--f3:#c8932f;--f4:#3f86c0;--f5:#c0558a;--page:var(--side);--surface:var(--panel)}
+:root[data-theme=dark]{--side:#1b1d22;--panel:#23262c;--bar:#1b1d22;--soft:#2c3037;--selected:#2d3039;--line:#2f333a;--ink:#d9dbe0;--muted:#7d818c;--accent:#d97757;--f0:#d97757;--f1:#8f87d6;--f2:#5aa88a;--f3:#d4a24c;--f4:#6aa6d6;--f5:#d77fae}
+header{border-bottom:0}
+main{padding:0}
+#sidebar{padding:6px 8px 8px}
+dialog,.select-menu,.note-menu,.tag-suggestions,.tree-menu,.table-picker{background:var(--panel)}
+#workspace>#editor{background:var(--panel);border:0;border-radius:10px 0 0 0;padding:0 28px}
+@media(min-width:760px){#editor,body[data-menu-side=right] #editor{border:0}body[data-menu-side=right] #workspace>#editor{border-radius:0 10px 0 0}#workspace{gap:0}}
+@media(max-width:759.98px){#workspace>#editor{border-radius:10px 10px 0 0;padding:0 14px}}
+#editor>:not(.toolbar){width:100%;max-width:760px;margin-inline:auto}
+.note-heading,.metadata-row{padding-top:0}
+#editor>.note-heading{padding-top:14px}
+.header-actions #status{color:var(--muted)}
+.card.selected,.tree-note.selected,.tree-folder.selected{background:var(--selected)}
+.tree-folder[data-hue]{border-left:2px solid var(--c);border-radius:0 6px 6px 0}
+.tree-folder[data-hue="0"]{--c:var(--f0)}.tree-folder[data-hue="1"]{--c:var(--f1)}.tree-folder[data-hue="2"]{--c:var(--f2)}
+.tree-folder[data-hue="3"]{--c:var(--f3)}.tree-folder[data-hue="4"]{--c:var(--f4)}.tree-folder[data-hue="5"]{--c:var(--f5)}
+.tree-folder[data-hue]{margin-top:2px}
+.toolbar{order:99;position:sticky;bottom:8px;align-self:center;width:auto;max-width:calc(100% - 8px);margin:6px 0 8px;padding:3px;border:0;border-radius:9px;background:var(--bar);box-shadow:0 2px 10px #0003}
+.toolbar-group+.toolbar-group{border-left-color:var(--line)}
+.toolbar .note-menu,.table-picker{top:auto;bottom:30px}
+.toolbar button:hover,.toolbar button.active{background:var(--selected)}
+#sidebar nav button.active,.control-panel #new:hover{background:var(--selected)}
+/* Folder sync stays conspicuous until the folder is connected. */
+.header-actions #syncNotice:not(.connected) #syncAccess{width:auto;padding:0 12px 0 10px;gap:7px;display:flex;align-items:center;background:var(--accent);color:#fff;font-size:12px;font-weight:600;animation:sync-pulse 2.4s ease-in-out infinite}
+.header-actions #syncNotice:not(.connected) #syncAccess::before{background:#fff}
+.header-actions #syncNotice:not(.connected) #syncAccess::after{content:'Подключить папку'}
+.header-actions #syncNotice:not(.connected) #syncAccess:hover{filter:brightness(1.1);background:var(--accent)}
+@keyframes sync-pulse{50%{box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 30%,transparent)}}
+@media(prefers-reduced-motion:reduce){.header-actions #syncNotice:not(.connected) #syncAccess{animation:none}}
+/* Folder stripes are all yellow. */
+:root{--f0:#e0ad1f;--f1:#e0ad1f;--f2:#e0ad1f;--f3:#e0ad1f;--f4:#e0ad1f;--f5:#e0ad1f}
+:root[data-theme=dark]{--f0:#ffd84d;--f1:#ffd84d;--f2:#ffd84d;--f3:#ffd84d;--f4:#ffd84d;--f5:#ffd84d}

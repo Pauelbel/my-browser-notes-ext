@@ -188,6 +188,7 @@ function renderTree(list) {
       const item = document.createElement('div'); item.className = 'tree-item';
       const row = document.createElement('button'); row.className = 'tree-folder'; row.style.paddingLeft = `${6 + depth * 10}px`;
       row.setAttribute('aria-expanded', String(open));
+      if (!depth) row.dataset.hue = String([...folder].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 6);
       const arrow = document.createElement('span'); arrow.className = 'tree-arrow'; arrow.textContent = open ? '▾' : '▸';
       const label = document.createElement('span'); label.textContent = folder.split('/').pop(); row.append(arrow, label);
       row.classList.toggle('selected', $('folderFilter').value === folder);
